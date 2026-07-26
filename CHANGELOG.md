@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.4.3 - 2026-07-26
+
+### Added
+- Added comma-separated inline tool allowlists for subagent frontmatter, so `tools: read, write, bash` works alongside the existing multiline YAML list format.
+
+### Fixed
+- Blocked subagent definitions that mix inline and multiline tool formats or declare `tools` more than once, instead of guessing which allowlist should win.
+- Added an actionable startup warning that identifies the blocked subagent and file and explains how to choose one supported format.
+- Preserved scalar frontmatter values containing commas, including descriptions, rather than interpreting every comma as a list separator.
+- Added Windows CRLF frontmatter support while preserving existing LF definitions.
+
+## 1.4.2 - 2026-07-26
+
+### Fixed
+- Made cancellation, timeout, stall detection, unrecoverable errors, and Pi shutdown enter a truthful non-terminal `stopping` state until the nested runner and Pi session actually settle.
+- Bound manager cancellation to Pi's supported `AgentSession.abort()` lifecycle and awaited cleanup before persisting `cancelled`, `failed`, or `interrupted`.
+- Removed premature grace-period terminalization and prevented late model, text, tool, and activity events from mutating stopping or terminal tasks.
+- Enforced inactivity timeouts for active tool calls so blocked tools cannot suppress stall detection indefinitely.
+- Reconciled orphaned persisted `queued` and `running` tasks as `interrupted` when a new Pi session starts.
+
+### Improved
+- Exposed Pi automatic retry and `agent_settled` activity separately from plugin execution attempts, making retries distinguishable from unexpected restarts.
+- Added real-process cancellation coverage proving that a built-in bash process tree is gone before the task becomes terminal.
+- Stabilized in-flight cancellation tests with deterministic prompt-entry synchronization instead of timing-based sleeps.
+
+### Compatibility
+- Updated nested session creation for Pi 0.82.1 by using `modelRuntime` and `systemPromptOverride` and removing unsupported prompt signal options.
+
 ## 1.4.1 - 2026-07-15
 
 ### Fixed

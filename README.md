@@ -116,9 +116,40 @@ Supported frontmatter:
 |---|---|
 | `name` | Subagent name. Defaults to filename stem. Normalized to lowercase. |
 | `description` | Short description shown by `subagent_list_agents`. |
-| `tools` | Tool allowlist for the subagent. When omitted, the definition gets the built-in default tool list. Configured `default_tools` is used by the runner when a definition has an empty tool list. |
+| `tools` | Tool allowlist for the subagent. Accepts either a comma-separated inline list or a multiline YAML list, but never both in one definition. When omitted, the definition gets the built-in default tool list. Configured `default_tools` is used by the runner when a definition has an empty tool list. |
 | `model` | Optional model as `provider/model-id`. |
 | `effort`, `thinking_level`, `thinkingLevel` | Optional thinking effort: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. |
+
+### Tool allowlist formats
+
+Choose exactly one `tools` format per subagent definition.
+
+Comma-separated inline list:
+
+```yaml
+tools: read, write, bash
+```
+
+Multiline YAML list:
+
+```yaml
+tools:
+  - read
+  - write
+  - bash
+```
+
+Both examples load the same allowlist: `read`, `write`, and `bash`. Comma splitting applies only to `tools`; scalar fields such as `description` can contain commas without becoming lists.
+
+Do not mix the formats or declare `tools` more than once:
+
+```yaml
+# Invalid: inline and multiline formats are mixed.
+tools: read, write
+  - bash
+```
+
+Ambiguous definitions are not loaded. On startup or `/reload`, Pi shows a warning with the subagent name and file path and asks you to choose either the inline or multiline format. The parser accepts frontmatter files with either LF or Windows CRLF line endings.
 
 The markdown body becomes the subagent instructions.
 
