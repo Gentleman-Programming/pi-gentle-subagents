@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import extension from '../index.js';
@@ -62,5 +62,33 @@ describe('subagents smoke', () => {
     const prompt = buildPrompt({ name: 'analyst', description: 'analysis', filePath: '/tmp/analyst.md', instructions: 'SYSTEM ONLY', tools: ['read'] } as any, 'inspect the repo', undefined, ['read']);
     expect(prompt).toBe('## delegated task\ninspect the repo');
     expect(prompt).not.toContain('SYSTEM ONLY');
+  });
+
+  it('reconciles orphaned tasks on session start and cancels running work on session shutdown', async () => {
+    vi.resetModules();
+    const reconcileOrphanedTasks = vi.fn();
+    const cancelRunning = vi.fn();
+    const managerInstance = { reconcileOrphanedTasks, cancelRunning, listSessionTasks: () => [] };
+    class MockManager {
+      constructor() { return managerInstance as any; }
+    }
+    vi.doMock('../src/manager.js', () => ({ SubagentManager: MockManager }));
+    const { default: reloadedExtension } = await import('../src/extension/subagents-extension.js');
+
+    const handlers = new Map<string, Function>();
+    const pi = {
+      registerMessageRenderer: vi.fn(),
+      registerShortcut: vi.fn(),
+      registerCommand: vi.fn(),
+      registerTool: vi.fn(),
+      on: vi.fn((event: string, handler: Function) => { handlers.set(event, handler); }),
+    };
+
+    reloadedExtension(pi);
+    handlers.get('session_start')?.({}, { cwd: env.tmp, ui: {} });
+    handlers.get('session_shutdown')?.({}, { cwd: env.tmp, ui: {} });
+
+    expect(reconcileOrphanedTasks).toHaveBeenCalledWith(env.tmp);
+    expect(cancelRunning).toHaveBeenCalledWith('Pi session shutdown');
   });
 });

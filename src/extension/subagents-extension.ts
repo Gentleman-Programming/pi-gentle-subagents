@@ -80,6 +80,7 @@ export default function subagentsExtension(pi: any): void {
   pi.on?.('session_start', (_event: unknown, ctx: any) => {
     clearClaudeBackgroundWidget();
     const cwd = ctx?.cwd ?? process.cwd();
+    manager.reconcileOrphanedTasks(cwd);
     for (const warning of subagentSourceWarnings(cwd)) ctx?.ui?.notify?.(warning, 'warning');
     if (typeof ctx?.ui?.setWidget !== 'function') return;
     widgetCtx = ctx;
@@ -89,6 +90,7 @@ export default function subagentsExtension(pi: any): void {
   });
 
   pi.on?.('session_shutdown', () => {
+    manager.cancelRunning('Pi session shutdown');
     clearClaudeBackgroundWidget();
   });
 

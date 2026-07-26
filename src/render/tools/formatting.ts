@@ -8,7 +8,7 @@ export const SUBAGENT_RESUME_GUIDANCE = [
 ].join('\n');
 
 export function appendSubagentResumeGuidance(text: string, tasks: Array<Pick<SubagentTask, 'status'>>): string {
-  return tasks.some((task) => task.status === 'failed' || task.status === 'cancelled')
+  return tasks.some((task) => task.status === 'failed' || task.status === 'cancelled' || task.status === 'interrupted' || task.status === 'stopping')
     ? `${text}\n\n${SUBAGENT_RESUME_GUIDANCE}`
     : text;
 }

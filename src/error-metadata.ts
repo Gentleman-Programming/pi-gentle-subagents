@@ -15,6 +15,7 @@ const RETRYABLE_DEFAULTS: Record<SubagentErrorCategory, boolean> = {
   total_timeout: false,
   stall_timeout: false,
   cancelled: false,
+  interrupted: false,
   empty_response_no_tools: false,
   empty_response_after_tools: false,
   context_overflow: false,
@@ -116,6 +117,8 @@ function safeMessage(category: SubagentErrorCategory, details?: Record<string, s
       return details?.stall_timeout_ms ? `Subagent stalled for ${details.stall_timeout_ms}ms without final response.` : 'Subagent stalled without final response.';
     case 'cancelled':
       return `Subagent cancelled: ${details?.cancel_reason ?? 'cancelled'}`;
+    case 'interrupted':
+      return `Subagent interrupted: ${details?.interrupt_reason ?? 'interrupted'}`;
     case 'empty_response_no_tools':
       return 'Subagent finished without a final response.';
     case 'empty_response_after_tools':

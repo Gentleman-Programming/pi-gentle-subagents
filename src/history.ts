@@ -89,6 +89,7 @@ function ensureAttemptColumns(db: Db): void {
   ensureColumn(db, 'subagent_task_attempts', 'error_category', 'TEXT');
   ensureColumn(db, 'subagent_task_attempts', 'result', 'TEXT');
   ensureColumn(db, 'subagent_task_attempts', 'thread_snapshot_json', 'TEXT');
+  ensureColumn(db, 'subagent_task_attempts', 'pi_retry_attempts', 'INTEGER');
 }
 
 function upsertTaskRecord(db: Db, table: 'subagent_tasks' | 'subagent_task_attempts', cwd: string, task: SubagentTask): void {
@@ -105,8 +106,8 @@ function upsertTaskRecord(db: Db, table: 'subagent_tasks' | 'subagent_task_attem
   }
 
   const columns = table === 'subagent_tasks'
-    ? 'id, cwd, agent, mode, status, task, context, created_at, attempt, session_id, nested_session_path, started_at, ended_at, last_activity_at, last_activity, output_preview, prompt, continuation_prompt, system_prompt, transcript, usage_input, usage_output, usage_cache_read, usage_cache_write, usage_cost, usage_context_tokens, usage_turns, model, effort, model_source, effort_source, fallback_used, error, error_metadata_json, error_category, result, thread_snapshot_json'
-    : 'task_id, attempt, cwd, agent, mode, status, task, context, created_at, session_id, nested_session_path, started_at, ended_at, last_activity_at, last_activity, output_preview, prompt, continuation_prompt, system_prompt, transcript, usage_input, usage_output, usage_cache_read, usage_cache_write, usage_cost, usage_context_tokens, usage_turns, model, effort, model_source, effort_source, fallback_used, error, error_metadata_json, error_category, result, thread_snapshot_json';
+    ? 'id, cwd, agent, mode, status, task, context, created_at, attempt, session_id, nested_session_path, started_at, ended_at, last_activity_at, last_activity, output_preview, prompt, continuation_prompt, system_prompt, transcript, usage_input, usage_output, usage_cache_read, usage_cache_write, usage_cost, usage_context_tokens, usage_turns, model, effort, model_source, effort_source, fallback_used, error, error_metadata_json, error_category, result, thread_snapshot_json, pi_retry_attempts'
+    : 'task_id, attempt, cwd, agent, mode, status, task, context, created_at, session_id, nested_session_path, started_at, ended_at, last_activity_at, last_activity, output_preview, prompt, continuation_prompt, system_prompt, transcript, usage_input, usage_output, usage_cache_read, usage_cache_write, usage_cost, usage_context_tokens, usage_turns, model, effort, model_source, effort_source, fallback_used, error, error_metadata_json, error_category, result, thread_snapshot_json, pi_retry_attempts';
   const placeholders = new Array(columns.split(',').length).fill('?').join(', ');
   const update = table === 'subagent_tasks'
     ? `status=excluded.status,
@@ -138,7 +139,8 @@ function upsertTaskRecord(db: Db, table: 'subagent_tasks' | 'subagent_task_attem
         error_metadata_json=excluded.error_metadata_json,
         error_category=excluded.error_category,
         result=excluded.result,
-        thread_snapshot_json=excluded.thread_snapshot_json`
+        thread_snapshot_json=excluded.thread_snapshot_json,
+        pi_retry_attempts=excluded.pi_retry_attempts`
     : `status=excluded.status,
         session_id=excluded.session_id,
         nested_session_path=excluded.nested_session_path,
@@ -167,7 +169,8 @@ function upsertTaskRecord(db: Db, table: 'subagent_tasks' | 'subagent_task_attem
         error_metadata_json=excluded.error_metadata_json,
         error_category=excluded.error_category,
         result=excluded.result,
-        thread_snapshot_json=excluded.thread_snapshot_json`;
+        thread_snapshot_json=excluded.thread_snapshot_json,
+        pi_retry_attempts=excluded.pi_retry_attempts`;
   const identity = table === 'subagent_tasks' ? 'id' : 'task_id, attempt';
 
   db.prepare(`
@@ -211,6 +214,7 @@ function upsertTaskRecord(db: Db, table: 'subagent_tasks' | 'subagent_task_attem
     errorCategory,
     value(task.result),
     snapshotJson(task.thread_snapshot),
+    task.pi_retry_attempts ?? null,
   );
 }
 
@@ -265,7 +269,8 @@ export class SubagentHistoryStore {
         error_metadata_json TEXT,
         error_category TEXT,
         result TEXT,
-        thread_snapshot_json TEXT
+        thread_snapshot_json TEXT,
+        pi_retry_attempts INTEGER
       );
       CREATE TABLE IF NOT EXISTS subagent_task_attempts (
         task_id TEXT NOT NULL,
@@ -305,6 +310,7 @@ export class SubagentHistoryStore {
         error_category TEXT,
         result TEXT,
         thread_snapshot_json TEXT,
+        pi_retry_attempts INTEGER,
         PRIMARY KEY (task_id, attempt)
       );
       CREATE TABLE IF NOT EXISTS subagent_events (
@@ -328,6 +334,7 @@ export class SubagentHistoryStore {
     ensureColumn(db, 'subagent_tasks', 'system_prompt', 'TEXT');
     ensureColumn(db, 'subagent_tasks', 'error_metadata_json', 'TEXT');
     ensureColumn(db, 'subagent_tasks', 'error_category', 'TEXT');
+    ensureColumn(db, 'subagent_tasks', 'pi_retry_attempts', 'INTEGER');
     ensureAttemptColumns(db);
     ensureColumn(db, 'subagent_events', 'attempt', 'INTEGER');
     this.dbs.set(file, db);
@@ -370,6 +377,15 @@ export class SubagentHistoryStore {
     `).all(cwd, sessionId, limit).map((row) => rowToTask(row, options));
   }
 
+  listTasksByStatus(cwd: string, statuses: SubagentTask['status'][], options: HistoryReadOptions = {}): SubagentTask[] {
+    if (!statuses.length) return [];
+    const placeholders = statuses.map(() => '?').join(', ');
+    return this.db(cwd).prepare(`
+      SELECT * FROM subagent_tasks WHERE cwd = ? AND status IN (${placeholders})
+      ORDER BY COALESCE(last_activity_at, started_at, created_at) DESC, created_at DESC, id DESC
+    `).all(cwd, ...statuses).map((row) => rowToTask(row, options));
+  }
+
   listTaskAttempts(cwd: string, taskId: string, options: HistoryReadOptions = {}): SubagentTask[] {
     return this.db(cwd).prepare(`
       SELECT
@@ -409,7 +425,8 @@ export class SubagentHistoryStore {
         error_metadata_json,
         error_category,
         result,
-        thread_snapshot_json
+        thread_snapshot_json,
+        pi_retry_attempts
       FROM subagent_task_attempts
       WHERE cwd = ? AND task_id = ?
       ORDER BY attempt ASC
@@ -456,5 +473,6 @@ function rowToTask(row: any, options: HistoryReadOptions = {}): SubagentTask {
     error_metadata: parseErrorMetadata(row.error_metadata_json),
     result: row.result ?? undefined,
     thread_snapshot: options.includeSnapshots === false ? undefined : parseSnapshotJson(row.thread_snapshot_json),
+    pi_retry_attempts: row.pi_retry_attempts ?? undefined,
   };
 }

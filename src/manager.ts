@@ -11,6 +11,12 @@ import { profileSourceLabel, resolveEffectiveSubagentProfile } from './profile-r
 import type { SubagentInteractionRequest, SubagentInteractionResponse } from './interaction-channel.js';
 import type { EffectiveSubagentProfile, ModelRef, SubagentContinueInput, SubagentDefinition, SubagentErrorMetadata, SubagentRunInput, SubagentsConfig, SubagentRunner, SubagentTask } from './types.js';
 
+type StopDisposition = {
+  status: Extract<SubagentTask['status'], 'failed' | 'cancelled' | 'interrupted'>;
+  metadata: Partial<SubagentErrorMetadata> & { category: SubagentErrorMetadata['category'] };
+  fallbackError?: string;
+};
+
 function nowIso(): string { return new Date().toISOString(); }
 function taskId(agent: string): string { return `subtask_${agent}_${Date.now()}_${randomUUID().replace(/-/g, '').slice(0, 8)}`; }
 function taskActivityTime(task: SubagentTask): string { return task.last_activity_at ?? task.started_at ?? task.created_at; }
@@ -84,7 +90,37 @@ function enrichTerminalMetadata(task: SubagentTask, parentSessionId: string | un
 }
 
 function isTerminalStatus(status: SubagentTask['status']): boolean {
-  return status === 'completed' || status === 'failed' || status === 'cancelled';
+  return status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'interrupted';
+}
+
+function stopDispositionFromReason(reason: string): StopDisposition {
+  if (reason === 'Pi session shutdown') {
+    return {
+      status: 'interrupted',
+      metadata: {
+        category: 'interrupted',
+        message: `Subagent interrupted: ${reason}`,
+        phase: 'manager',
+        retryable: false,
+        partial_result_available: false,
+        details: { interrupt_reason: reason },
+      },
+      fallbackError: `Subagent interrupted: ${reason}`,
+    };
+  }
+  const phase = reason === 'parent abort' ? 'manager' : 'user';
+  return {
+    status: 'cancelled',
+    metadata: {
+      category: 'cancelled',
+      message: `Subagent cancelled: ${reason}`,
+      phase,
+      retryable: false,
+      partial_result_available: false,
+      details: { cancel_reason: reason },
+    },
+    fallbackError: `Subagent cancelled: ${reason}`,
+  };
 }
 
 function resolveContinuationProfile(definition: SubagentDefinition, config: SubagentsConfig, ctx: any, input: SubagentContinueInput): EffectiveSubagentProfile {
@@ -218,6 +254,7 @@ export class SubagentManager {
   private pendingUpdates = new Map<string, NodeJS.Timeout>();
   private sessionTaskCache = new Map<string, { expiresAt: number; tasks: SubagentTask[] }>();
   private runnerSettlements = new Map<string, Promise<void>>();
+  private stopDispositions = new Map<string, StopDisposition>();
 
   constructor(
     private runner: SubagentRunner = sdkSubagentRunner,
@@ -262,9 +299,37 @@ export class SubagentManager {
     return this.tasks.get(id) ?? (cwd ? this.history.getTask(cwd, id) : undefined);
   }
 
+  reconcileOrphanedTasks(cwd: string): SubagentTask[] {
+    const orphaned = this.history.listTasksByStatus(cwd, ['queued', 'running']);
+    const interruptedAt = nowIso();
+    const reconciled: SubagentTask[] = [];
+    for (const task of orphaned) {
+      const updated: SubagentTask = {
+        ...task,
+        status: 'interrupted',
+        stop_reason: 'orphaned active state at startup',
+        last_activity_at: interruptedAt,
+        last_activity: 'interrupted at startup',
+        ended_at: interruptedAt,
+      };
+      updated.error_metadata = enrichTerminalMetadata(updated, updated.session_id, normalizeErrorMetadata({
+        category: 'interrupted',
+        message: 'Subagent interrupted: orphaned active state at startup',
+        phase: 'manager',
+        retryable: false,
+        partial_result_available: hasPartialResult(updated),
+        details: { interrupt_reason: 'orphaned active state at startup' },
+      }));
+      updated.error = deriveErrorString(updated.error_metadata);
+      this.recordNow(cwd, updated, updated.last_activity ?? 'interrupted at startup');
+      reconciled.push(updated);
+    }
+    return reconciled;
+  }
+
   cancelRunning(reason = 'cancelled'): SubagentTask[] {
     return [...this.tasks.values()]
-      .filter((task) => task.status === 'queued' || task.status === 'running')
+      .filter((task) => task.status === 'queued' || task.status === 'running' || task.status === 'stopping')
       .map((task) => this.cancel(task.id, reason));
   }
 
@@ -284,7 +349,7 @@ export class SubagentManager {
   }
 
   hasRunning(): boolean {
-    return [...this.tasks.values()].some((task) => task.status === 'queued' || task.status === 'running');
+    return [...this.tasks.values()].some((task) => task.status === 'queued' || task.status === 'running' || task.status === 'stopping');
   }
 
   private limiter(cwd: string, maxConcurrency: number): ReturnType<typeof createLimiter> {
@@ -334,7 +399,7 @@ export class SubagentManager {
     const cwd = ctx?.cwd ?? process.cwd();
     const existing = this.getTask(input.task_id, cwd);
     if (!existing) throw new Error(`Subagent task not found: ${input.task_id}`);
-    if (!isTerminalStatus(existing.status)) throw new Error('Only completed, failed, or cancelled subagent tasks can continue.');
+    if (existing.status !== 'stopping' && !isTerminalStatus(existing.status)) throw new Error('Only completed, failed, or cancelled subagent tasks can continue.');
     await this.awaitRunnerCleanup(existing.id);
     const latest = this.getTask(input.task_id, cwd) ?? existing;
     if (!isTerminalStatus(latest.status)) throw new Error('Only completed, failed, or cancelled subagent tasks can continue.');
@@ -397,24 +462,56 @@ export class SubagentManager {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Subagent task not found: ${id}`);
     if (isTerminalStatus(task.status)) return task;
+    const disposition = stopDispositionFromReason(reason);
+    const cwd = this.taskCwds.get(id);
+    if (task.status === 'queued') {
+      task.status = disposition.status;
+      task.stop_reason = reason;
+      task.last_activity = reason;
+      task.last_activity_at = nowIso();
+      task.ended_at = task.last_activity_at;
+      task.error_metadata = enrichTerminalMetadata(task, task.session_id, normalizeErrorMetadata({
+        ...disposition.metadata,
+        partial_result_available: hasPartialResult(task),
+      }));
+      task.error = deriveErrorString(task.error_metadata);
+      if (cwd) this.record(cwd, task, task.last_activity, true);
+      return task;
+    }
+    if (task.status === 'stopping') return task;
+    this.stopDispositions.set(id, disposition);
+    this.transitionToStopping(task, reason, cwd);
+    this.notifyTaskUpdate(id, undefined, true);
     this.controllers.get(id)?.abort();
-    task.status = 'cancelled';
-    task.last_activity = task.output_preview ? `${reason}; partial output preserved` : reason;
+    return task;
+  }
+
+  private transitionToStopping(task: SubagentTask, reason: string, cwd?: string): void {
+    if (task.status === 'stopping' || isTerminalStatus(task.status)) return;
+    task.status = 'stopping';
+    task.stop_reason = reason;
+    task.last_activity = reason;
+    task.last_activity_at = nowIso();
+    task.ended_at = undefined;
+    delete task.interaction_request;
+    if (cwd) this.record(cwd, task, reason, true);
+  }
+
+  private finalizeStop(task: SubagentTask, parentSessionId: string | undefined, cwd: string, onTaskUpdate?: () => void): void {
+    const disposition = this.stopDispositions.get(task.id) ?? stopDispositionFromReason(task.stop_reason ?? 'cancelled');
+    task.status = disposition.status;
     task.last_activity_at = nowIso();
     task.ended_at = task.last_activity_at;
-    const phase = reason === 'parent abort' ? 'manager' : 'user';
-    task.error_metadata = enrichTerminalMetadata(task, task.session_id, normalizeErrorMetadata({
-      category: 'cancelled',
-      message: `Subagent cancelled: ${reason}`,
-      phase,
-      retryable: false,
+    task.error_metadata = enrichTerminalMetadata(task, parentSessionId, normalizeErrorMetadata({
+      ...disposition.metadata,
       partial_result_available: hasPartialResult(task),
-      details: { cancel_reason: reason },
     }));
     task.error = deriveErrorString(task.error_metadata);
-    const cwd = this.taskCwds.get(id);
-    if (cwd) this.record(cwd, task, task.last_activity, true);
-    return task;
+    task.last_activity = disposition.status === 'failed' ? `failed: ${task.error}` : task.stop_reason ?? task.error;
+    delete task.interaction_request;
+    this.stopDispositions.delete(task.id);
+    this.record(cwd, task, task.last_activity, true);
+    this.notifyTaskUpdate(task.id, onTaskUpdate, true);
   }
 
   private startOne(
@@ -497,6 +594,7 @@ export class SubagentManager {
             nested_session_path: nestedSessionPath,
             continuation: continuationPrompt ? { prompt: continuationPrompt, attempt: task.attempt ?? 1, previous_snapshot: previousSnapshot } : undefined,
             onActivity: (activity) => {
+              if (task.status === 'stopping' || isTerminalStatus(task.status)) return;
               task.last_activity_at = nowIso();
               task.last_activity = activity.message;
               if (activity.output) task.output_preview = compactOutput(activity.output);
@@ -511,6 +609,7 @@ export class SubagentManager {
               if (activity.thread_snapshot) task.thread_snapshot = sanitizeUnknown(activity.thread_snapshot);
               if (activity.interaction_request) task.interaction_request = activity.interaction_request;
               if (activity.nested_session_path) task.nested_session_path = activity.nested_session_path;
+              if (activity.pi_retry_attempts !== undefined) task.pi_retry_attempts = activity.pi_retry_attempts;
               const importantActivity = activity.message === 'interaction required'
                 || Boolean(activity.interaction_request)
                 || (Boolean(activity.thread_snapshot) && !activity.message.startsWith('streaming '));
@@ -523,6 +622,20 @@ export class SubagentManager {
           const timeoutPromise = new Promise<never>((_resolve, reject) => {
             timeout = setTimeout(() => {
               timedOut = true;
+              this.stopDispositions.set(id, {
+                status: 'failed',
+                metadata: {
+                  category: 'total_timeout',
+                  message: `timed out after ${config.timeout_ms}ms`,
+                  phase: 'manager',
+                  retryable: false,
+                  partial_result_available: false,
+                  details: { timeout_ms: String(config.timeout_ms) },
+                },
+                fallbackError: `timed out after ${config.timeout_ms}ms`,
+              });
+              this.transitionToStopping(task, `timed out after ${config.timeout_ms}ms`, cwd);
+              this.notifyTaskUpdate(id, onTaskUpdate, true);
               controller.abort();
               reject(new Error(`timed out after ${config.timeout_ms}ms`));
             }, config.timeout_ms);
@@ -538,7 +651,11 @@ export class SubagentManager {
             clearTimeout(timeout);
             timeout = undefined;
           }
-          if ((task as SubagentTask).status === 'cancelled') return;
+          if ((task as SubagentTask).status === 'stopping') {
+            this.finalizeStop(task, parentSessionId, cwd, onTaskUpdate);
+            return;
+          }
+          if (isTerminalStatus(task.status)) return;
 
           const interactionRequest = result.interaction_request;
           if (!interactionRequest) break;
@@ -581,7 +698,9 @@ export class SubagentManager {
         if (!result) throw new Error('Subagent finished without a result.');
         const finalResult = sanitizeInteractionTransportText(result.result ?? '');
         if (!finalResult.trim()) throw new Error('Subagent finished without a final response.');
+        this.stopDispositions.delete(id);
         task.status = 'completed';
+        delete task.stop_reason;
         task.result = finalResult;
         task.output_preview = compactOutput(finalResult);
         task.transcript = sanitizeInteractionTransportText(`${task.transcript ?? ''}\n\n# response sent to orchestrator\n\n${finalResult}`.trim());
@@ -603,8 +722,17 @@ export class SubagentManager {
           this.onTerminalBackgroundTask?.(task);
         }
       } catch (error) {
-        if ((task as SubagentTask).status === 'cancelled') return;
+        if (task.status === 'stopping') {
+          await activeRunnerSettlement?.catch(() => undefined);
+          activeRunnerSettlement = undefined;
+          this.finalizeStop(task, parentSessionId, cwd, onTaskUpdate);
+          if (task.mode === 'background') this.onTerminalBackgroundTask?.(task);
+          return;
+        }
+        if (isTerminalStatus(task.status)) return;
+        this.stopDispositions.delete(id);
         task.status = 'failed';
+        delete task.stop_reason;
         const metadata = timedOut
           ? normalizeErrorMetadata({
               category: 'total_timeout',
@@ -666,6 +794,7 @@ export class SubagentManager {
   }
 
   private record(cwd: string, task: SubagentTask, activity: string, immediate = false): void {
+    if (!immediate && (task.status === 'stopping' || isTerminalStatus(task.status))) return;
     if (immediate) {
       this.flushRecord(task.id);
       this.recordNow(cwd, task, activity);
@@ -703,6 +832,8 @@ export class SubagentManager {
 
   private notifyTaskUpdate(taskId: string, onTaskUpdate: (() => void) | undefined, immediate = false): void {
     if (!onTaskUpdate) return;
+    const task = this.tasks.get(taskId);
+    if (!immediate && task && (task.status === 'stopping' || isTerminalStatus(task.status))) return;
     if (immediate) {
       const pending = this.pendingUpdates.get(taskId);
       if (pending) clearTimeout(pending);

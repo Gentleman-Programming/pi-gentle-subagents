@@ -117,6 +117,15 @@ export class ThreadSnapshotBuilder {
       this.appendAssistantDelta(textDelta, thinkingDelta);
       return;
     }
+    if (event?.type === 'auto_retry_start' || event?.type === 'auto_retry_end' || event?.type === 'agent_settled') {
+      const text = event.type === 'auto_retry_start'
+        ? 'auto retry start'
+        : event.type === 'auto_retry_end'
+          ? 'auto retry end'
+          : 'agent settled';
+      this.items.push({ type: 'status', text, severity: event.type === 'agent_settled' ? 'success' : 'info' });
+      return;
+    }
     if (event?.type === 'tool_execution_start') {
       const name = event.toolName ?? event.name ?? 'tool';
       const tool_call_id = eventToolCallId(event);

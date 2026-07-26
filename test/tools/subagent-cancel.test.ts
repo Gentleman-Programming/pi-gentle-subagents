@@ -27,7 +27,7 @@ describe('subagent_cancel tool', () => {
     expect(cancelled.content[0].text).toContain('can be resumed with `subagent_continue`');
     expect(cancelled.content[0].text).toContain('Ask the user before resuming');
     expect(cancelled.content[0].text).toContain('model and effort');
-    expect(cancelled.details.task).toMatchObject({ id: taskId, status: 'cancelled', task: 'cancel me' });
+    expect(cancelled.details.task).toMatchObject({ id: taskId, status: 'stopping', task: 'cancel me' });
   });
 
   it('returns an error result when the task does not exist', async () => {

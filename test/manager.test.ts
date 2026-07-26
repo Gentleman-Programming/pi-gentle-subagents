@@ -217,7 +217,9 @@ describe('manager and history integration', () => {
   it('classifies manager total timeout ownership compatibly and preserves structured metadata', async () => {
     writeAgent('analyst');
     fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ timeout_ms: 20 }));
-    const runner: SubagentRunner = async () => new Promise(() => {});
+    const runner: SubagentRunner = async ({ signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new Error('cleanup complete after timeout')), { once: true });
+    });
     const manager = new SubagentManager(runner);
     const result = await manager.run({ agent: 'analyst', task: 'timeout', mode: 'task' }, { cwd: tmp, sessionId: 'timeout-parent' });
 
@@ -266,16 +268,20 @@ describe('manager and history integration', () => {
     });
     const manager = new SubagentManager(runner);
 
-    const initial = await manager.run({ agent: 'analyst', task: 'timeout continuation', mode: 'task' }, { cwd: tmp });
+    const initial = await manager.run({ agent: 'analyst', task: 'timeout continuation', mode: 'background' }, { cwd: tmp });
     const taskId = initial.task_ids[0]!;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(manager.getTask(taskId)?.status).toBe('stopping');
+
     const continuePromise = manager.continueTask({ task_id: taskId, prompt: 'Resume after timeout.' }, { cwd: tmp });
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(runner).toHaveBeenCalledTimes(1);
     allowCleanup = true;
 
-    const continued = await continuePromise;
+    await continuePromise;
+    await new Promise((resolve) => setTimeout(resolve, 30));
     expect(reopenedBeforeCleanup).toBe(false);
-    expect(continued.results?.[0]).toMatchObject({
+    expect(manager.getTask(taskId)).toMatchObject({
       id: taskId,
       status: 'completed',
       attempt: 2,
@@ -368,9 +374,12 @@ describe('manager and history integration', () => {
     const result = await manager.run({ agent: 'analyst', task: 'slow work', mode: 'background' }, { cwd: tmp, sessionId: 'cancel-parent' });
     const task = manager.cancel(result.task_ids[0], 'user request');
 
-    expect(task.status).toBe('cancelled');
-    expect(task.error).toBe('Subagent cancelled: user request');
-    expect(task.error_metadata).toMatchObject({
+    expect(task.status).toBe('stopping');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const settled = manager.getTask(result.task_ids[0])!;
+    expect(settled.status).toBe('cancelled');
+    expect(settled.error).toBe('Subagent cancelled: user request');
+    expect(settled.error_metadata).toMatchObject({
       version: 1,
       category: 'cancelled',
       phase: 'user',
@@ -378,7 +387,6 @@ describe('manager and history integration', () => {
       parent_session_id: 'cancel-parent',
       details: { cancel_reason: 'user request' },
     });
-    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(persisted.filter((entry) => entry.status === 'cancelled')).toHaveLength(1);
     expect(persisted.filter((entry) => entry.status === 'failed')).toHaveLength(0);
   });
@@ -429,6 +437,149 @@ describe('manager and history integration', () => {
     expect(manager.getTask(taskId)?.attempt).toBe(2);
   });
 
+  it('keeps timed-out tasks in stopping until runner settlement and ignores late activity after stop begins', async () => {
+    writeAgent('analyst');
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ timeout_ms: 20 }));
+    const persisted: Array<{ status: string; activity: string }> = [];
+    const history = {
+      upsertTask(_cwd: string, task: SubagentTask) { persisted.push({ status: task.status, activity: task.last_activity ?? '' }); },
+      addEvent() {},
+      listTasks() { return []; },
+      listSessionTasks() { return []; },
+      getTask() { return undefined; },
+    };
+    let allowCleanup = false;
+    const runner: SubagentRunner = async ({ signal, onActivity }) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => {
+        onActivity?.({ message: 'late tool activity after abort', output: 'should be dropped' });
+        const finish = () => {
+          if (!allowCleanup) return setTimeout(finish, 5);
+          reject(new Error('cleanup complete after timeout'));
+        };
+        finish();
+      }, { once: true });
+    });
+    const manager = new SubagentManager(runner, history as any);
+
+    const started = await manager.run({ agent: 'analyst', task: 'slow timeout', mode: 'background' }, { cwd: tmp });
+    const id = started.task_ids[0]!;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    expect(manager.getTask(id)).toMatchObject({ status: 'stopping', last_activity: 'timed out after 20ms' });
+    expect(persisted.some((entry) => entry.status === 'failed')).toBe(false);
+    expect(manager.getTask(id)?.output_preview).toBeUndefined();
+
+    allowCleanup = true;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(manager.getTask(id)).toMatchObject({ status: 'failed', error: 'timed out after 20ms' });
+    expect(persisted.some((entry) => entry.status === 'failed')).toBe(true);
+  });
+
+  it('keeps cancelled tasks in stopping until runner settlement and ignores late activity after cancellation', async () => {
+    writeAgent('analyst');
+    let allowCleanup = false;
+    const runner: SubagentRunner = async ({ signal, onActivity }) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => {
+        onActivity?.({ message: 'late activity after cancel', output: 'should not persist' });
+        const finish = () => {
+          if (!allowCleanup) return setTimeout(finish, 5);
+          reject(new Error('Subagent was aborted'));
+        };
+        finish();
+      }, { once: true });
+    });
+    const manager = new SubagentManager(runner);
+
+    const started = await manager.run({ agent: 'analyst', task: 'cancel me', mode: 'background' }, { cwd: tmp, sessionId: 'cancel-parent' });
+    const id = started.task_ids[0]!;
+    const stopping = manager.cancel(id, 'user request');
+
+    expect(stopping).toMatchObject({ status: 'stopping', last_activity: 'user request' });
+    expect(manager.getTask(id)?.error).toBeUndefined();
+    expect(manager.getTask(id)?.output_preview).toBeUndefined();
+
+    allowCleanup = true;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(manager.getTask(id)).toMatchObject({ status: 'cancelled', error: 'Subagent cancelled: user request' });
+    expect(manager.getTask(id)?.error_metadata).toMatchObject({ category: 'cancelled', phase: 'user' });
+  });
+
+  it('does not terminalize a stopping timeout solely because the grace window elapsed', async () => {
+    writeAgent('analyst');
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ timeout_ms: 20 }));
+    let allowCleanup = false;
+    const runner: SubagentRunner = async ({ signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => {
+        const finish = () => {
+          if (!allowCleanup) return setTimeout(finish, 5);
+          reject(new Error('cleanup complete after timeout'));
+        };
+        finish();
+      }, { once: true });
+    });
+    const manager = new SubagentManager(runner);
+
+    const started = await manager.run({ agent: 'analyst', task: 'stuck cleanup', mode: 'background' }, { cwd: tmp });
+    const id = started.task_ids[0]!;
+
+    await new Promise((resolve) => setTimeout(resolve, 160));
+    expect(manager.getTask(id)).toMatchObject({ status: 'stopping', last_activity: 'timed out after 20ms' });
+    expect(manager.getTask(id)?.ended_at).toBeUndefined();
+    expect(manager.getTask(id)?.error).toBeUndefined();
+
+    allowCleanup = true;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(manager.getTask(id)).toMatchObject({ status: 'failed', error: 'timed out after 20ms' });
+  });
+
+  it('reconciles orphaned queued and running persisted tasks as interrupted without touching terminal rows', () => {
+    const history = new SubagentHistoryStore();
+    const createdAt = new Date().toISOString();
+    history.upsertTask(tmp, {
+      id: 'orphan-queued',
+      agent: 'analyst',
+      mode: 'task',
+      status: 'queued',
+      task: 'queued orphan',
+      created_at: createdAt,
+    } as any);
+    history.upsertTask(tmp, {
+      id: 'orphan-running',
+      agent: 'analyst',
+      mode: 'task',
+      status: 'running',
+      task: 'running orphan',
+      created_at: createdAt,
+      started_at: createdAt,
+    } as any);
+    history.upsertTask(tmp, {
+      id: 'finished-task',
+      agent: 'analyst',
+      mode: 'task',
+      status: 'completed',
+      task: 'done already',
+      created_at: createdAt,
+      result: 'done',
+    } as any);
+
+    const manager = new SubagentManager(mockRunner(), history);
+    const reconciled = manager.reconcileOrphanedTasks(tmp);
+
+    expect(reconciled.map((task) => ({ id: task.id, status: task.status }))).toEqual([
+      { id: 'orphan-running', status: 'interrupted' },
+      { id: 'orphan-queued', status: 'interrupted' },
+    ]);
+    expect(history.getTask(tmp, 'orphan-queued')).toMatchObject({
+      status: 'interrupted',
+      error: 'Subagent interrupted: orphaned active state at startup',
+      error_metadata: expect.objectContaining({ category: 'interrupted' }),
+    });
+    expect(history.getTask(tmp, 'orphan-running')).toMatchObject({ status: 'interrupted' });
+    expect(history.getTask(tmp, 'finished-task')).toMatchObject({ status: 'completed', result: 'done' });
+  });
+
   it('records manager cancel metadata for parent abort with compatible wording', async () => {
     writeAgent('analyst');
     const runner: SubagentRunner = async ({ signal }) => new Promise((_resolve, reject) => {
@@ -442,9 +593,12 @@ describe('manager and history integration', () => {
     const result = await runPromise;
     const task = manager.getTask(result.task_ids[0]);
 
-    expect(task?.status).toBe('cancelled');
-    expect(task?.error).toBe('Subagent cancelled: parent abort');
-    expect(task?.error_metadata).toMatchObject({
+    expect(task?.status).toBe('stopping');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const settled = manager.getTask(result.task_ids[0]);
+    expect(settled?.status).toBe('cancelled');
+    expect(settled?.error).toBe('Subagent cancelled: parent abort');
+    expect(settled?.error_metadata).toMatchObject({
       version: 1,
       category: 'cancelled',
       phase: 'manager',

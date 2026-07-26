@@ -6,7 +6,7 @@ import { SubagentStructuredError, classifyFallbackFailure, classifyThrownError, 
 import type { SubagentDefinition, SubagentErrorMetadata, SubagentsConfig } from '../../src/types.js';
 
 describe('subagent runner interaction-required bridge', () => {
-  it('uses a lean isolated resource loader with subagent markdown as system prompt', async () => {
+  it('uses a lean isolated resource loader with modelRuntime and systemPromptOverride', async () => {
     vi.resetModules();
     let delegatedPrompt = '';
     const session = {
@@ -48,12 +48,13 @@ describe('subagent runner interaction-required bridge', () => {
       session_resources: 'lean',
     };
     const activities: any[] = [];
+    const modelRuntime = { getModel: vi.fn() };
 
     const result = await sdkSubagentRunner({
       definition,
       task: 'lean startup',
       cwd: '/workspace',
-      ctx: { model: { provider: 'test', id: 'model' } },
+      ctx: { model: { provider: 'test', id: 'model' }, modelRuntime },
       config,
       signal: new AbortController().signal,
       onActivity: (activity) => activities.push(activity),
@@ -62,13 +63,50 @@ describe('subagent runner interaction-required bridge', () => {
     expect(result.result).toBe('lean done');
     expect(loaderInstances).toHaveLength(1);
     expect(loaderInstances[0].reload).toHaveBeenCalledTimes(1);
-    expect(loaderInstances[0].options).toMatchObject({ cwd: '/workspace', agentDir: '/agent-dir', noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true, systemPrompt: '# Analyst\nSYSTEM_SENTINEL' });
+    expect(loaderInstances[0].options).toMatchObject({ cwd: '/workspace', agentDir: '/agent-dir', noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true });
+    expect(loaderInstances[0].options.systemPrompt).toBeUndefined();
+    expect(typeof loaderInstances[0].options.systemPromptOverride).toBe('function');
+    expect(loaderInstances[0].options.systemPromptOverride()).toBe('# Analyst\nSYSTEM_SENTINEL');
     expect(typeof loaderInstances[0].options.extensionsOverride).toBe('function');
     expect(inMemory).toHaveBeenCalledWith('/workspace');
-    expect(createAgentSession).toHaveBeenCalledWith(expect.objectContaining({ resourceLoader: loaderInstances[0], cwd: '/workspace', tools: ['read'] }));
+    expect(createAgentSession).toHaveBeenCalledWith(expect.objectContaining({ resourceLoader: loaderInstances[0], cwd: '/workspace', tools: ['read'], modelRuntime }));
+    expect(createAgentSession).not.toHaveBeenCalledWith(expect.objectContaining({ authStorage: expect.anything() }));
     expect(delegatedPrompt).toBe('## delegated task\nlean startup');
     expect(delegatedPrompt).not.toContain('SYSTEM_SENTINEL');
     expect(activities.some((activity) => activity.system_prompt === '# Analyst\nSYSTEM_SENTINEL')).toBe(true);
+  });
+
+  it('resolves configured models through modelRuntime.getModel before falling back to modelRegistry', async () => {
+    vi.resetModules();
+    const resolvedModel = { provider: 'runtime', id: 'resolved-model' };
+    const session = {
+      subscribe: vi.fn(() => vi.fn()),
+      prompt: vi.fn(async () => undefined),
+      messages: [{ role: 'assistant', content: 'runtime done' }],
+      dispose: vi.fn(async () => undefined),
+    };
+    const createAgentSession = vi.fn(() => ({ session }));
+    vi.doMock('@earendil-works/pi-coding-agent', () => ({
+      SessionManager: { inMemory: () => ({}) },
+      createAgentSession,
+    }));
+
+    const { sdkSubagentRunner } = await import('../../src/runner.js');
+    const modelRuntime = { getModel: vi.fn(() => resolvedModel) };
+    const modelRegistry = { find: vi.fn(() => ({ provider: 'registry', id: 'old-path' })) };
+
+    await sdkSubagentRunner({
+      definition: { name: 'analyst', description: 'analysis', filePath: '/tmp/analyst.md', instructions: 'system', tools: ['read'], model: { provider: 'openai', id: 'gpt-5.5' } },
+      task: 'use configured model',
+      cwd: '/workspace',
+      ctx: { modelRuntime, modelRegistry },
+      config: { timeout_ms: 10_000, stall_timeout_ms: 10_000, max_concurrency: 1, default_tools: ['read'], model_profiles: {} },
+      signal: new AbortController().signal,
+    } as any);
+
+    expect(modelRuntime.getModel).toHaveBeenCalledWith('openai', 'gpt-5.5');
+    expect(modelRegistry.find).not.toHaveBeenCalled();
+    expect(createAgentSession).toHaveBeenCalledWith(expect.objectContaining({ model: resolvedModel }));
   });
 
   it('filters subagent extension hooks to tools and tool-safety events only', async () => {
@@ -609,5 +647,78 @@ describe('subagent runner interaction-required bridge', () => {
       if (previousRegistry === undefined) delete holder[registryKey];
       else holder[registryKey] = previousRegistry;
     }
+  });
+
+  it('aborts the created AgentSession and waits for prompt settlement on in-flight cancellation', async () => {
+    vi.resetModules();
+    let settlePrompt: (() => void) | undefined;
+    let promptEntered: (() => void) | undefined;
+    const promptStarted = new Promise<void>((resolve) => { promptEntered = resolve; });
+    const session = {
+      subscribe: vi.fn(() => vi.fn()),
+      prompt: vi.fn(async (_prompt: string, options?: unknown) => {
+        expect(options).toBeUndefined();
+        promptEntered?.();
+        await new Promise<void>((resolve) => { settlePrompt = resolve; });
+      }),
+      abort: vi.fn(async () => { settlePrompt?.(); }),
+      messages: [{ role: 'assistant', content: 'aborted after cleanup' }],
+      dispose: vi.fn(async () => undefined),
+    };
+
+    vi.doMock('@earendil-works/pi-coding-agent', () => ({
+      SessionManager: { inMemory: () => ({}) },
+      createAgentSession: vi.fn(() => ({ session })),
+    }));
+
+    const { sdkSubagentRunner } = await import('../../src/runner.js');
+    const controller = new AbortController();
+    const runPromise = sdkSubagentRunner({
+      definition: { name: 'sdd-apply', description: 'apply executor', filePath: '/tmp/sdd-apply.md', instructions: 'return a concise result', tools: ['read'] },
+      task: 'cancel in flight',
+      cwd: '/workspace',
+      ctx: { model: { provider: 'test', id: 'model' } },
+      config: { timeout_ms: 10_000, stall_timeout_ms: 10_000, max_concurrency: 1, default_tools: ['read'], model_profiles: {} },
+      signal: controller.signal,
+    });
+
+    await promptStarted;
+    controller.abort();
+
+    await expect(runPromise).rejects.toThrow('Subagent was aborted');
+    expect(session.prompt).toHaveBeenCalledOnce();
+    expect(session.abort).toHaveBeenCalledOnce();
+  });
+
+  it('aborts a pre-aborted AgentSession before prompting', async () => {
+    vi.resetModules();
+    const session = {
+      subscribe: vi.fn(() => vi.fn()),
+      prompt: vi.fn(async () => undefined),
+      abort: vi.fn(async () => undefined),
+      messages: [{ role: 'assistant', content: 'should not be returned' }],
+      dispose: vi.fn(async () => undefined),
+    };
+
+    vi.doMock('@earendil-works/pi-coding-agent', () => ({
+      SessionManager: { inMemory: () => ({}) },
+      createAgentSession: vi.fn(() => ({ session })),
+    }));
+
+    const { sdkSubagentRunner } = await import('../../src/runner.js');
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(sdkSubagentRunner({
+      definition: { name: 'sdd-apply', description: 'apply executor', filePath: '/tmp/sdd-apply.md', instructions: 'return a concise result', tools: ['read'] },
+      task: 'cancel before prompt',
+      cwd: '/workspace',
+      ctx: { model: { provider: 'test', id: 'model' } },
+      config: { timeout_ms: 10_000, stall_timeout_ms: 10_000, max_concurrency: 1, default_tools: ['read'], model_profiles: {} },
+      signal: controller.signal,
+    })).rejects.toThrow('Subagent was aborted');
+
+    expect(session.abort).toHaveBeenCalledOnce();
+    expect(session.prompt).not.toHaveBeenCalled();
   });
 });

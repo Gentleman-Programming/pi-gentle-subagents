@@ -1,7 +1,7 @@
 import type { SubagentInteractionRequest } from './interaction-channel.js';
 
 export type SubagentMode = 'task' | 'background';
-export type SubagentStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type SubagentStatus = 'queued' | 'running' | 'stopping' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 
 export type ModelRef = { provider: string; id: string };
 export type ThinkingEffort = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
@@ -95,6 +95,7 @@ export type SubagentErrorCategory =
   | 'total_timeout'
   | 'stall_timeout'
   | 'cancelled'
+  | 'interrupted'
   | 'empty_response_no_tools'
   | 'empty_response_after_tools'
   | 'context_overflow'
@@ -298,6 +299,8 @@ export type SubagentTask = {
   result?: string;
   thread_snapshot?: SubagentThreadSnapshot;
   interaction_request?: SubagentInteractionRequest;
+  stop_reason?: string;
+  pi_retry_attempts?: number;
 };
 
 export type SubagentRunner = (input: {
@@ -313,5 +316,5 @@ export type SubagentRunner = (input: {
   effectiveProfile?: EffectiveSubagentProfile;
   nested_session_path?: string;
   continuation?: { prompt: string; attempt: number; previous_snapshot?: SubagentThreadSnapshot };
-  onActivity?: (activity: { message: string; output?: string; prompt?: string; system_prompt?: string; transcript?: string; usage?: UsageStats; effort?: ThinkingEffort; thread_snapshot?: SubagentThreadSnapshot; interaction_request?: SubagentInteractionRequest; nested_session_path?: string }) => void;
+  onActivity?: (activity: { message: string; output?: string; prompt?: string; system_prompt?: string; transcript?: string; usage?: UsageStats; effort?: ThinkingEffort; thread_snapshot?: SubagentThreadSnapshot; interaction_request?: SubagentInteractionRequest; nested_session_path?: string; pi_retry_attempts?: number }) => void;
 }) => Promise<{ result: string; model?: string; effort?: ThinkingEffort; fallback_used?: boolean; usage?: UsageStats; error_metadata?: SubagentErrorMetadata; thread_snapshot?: SubagentThreadSnapshot; interaction_request?: SubagentInteractionRequest; system_prompt?: string; nested_session_path?: string }>;

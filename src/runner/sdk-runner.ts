@@ -20,7 +20,7 @@ function modelRefLabel(ref: ModelRef | undefined): string | undefined {
 
 function resolveModel(ctx: any, ref?: ModelRef): any | undefined {
   if (!ref) return undefined;
-  return ctx?.modelRegistry?.find?.(ref.provider, ref.id);
+  return ctx?.modelRuntime?.getModel?.(ref.provider, ref.id) ?? ctx?.modelRegistry?.find?.(ref.provider, ref.id);
 }
 
 const SUBAGENT_ALLOWED_EXTENSION_EVENTS = new Set(['tool_call', 'tool_result', 'user_bash']);
@@ -131,8 +131,7 @@ async function createSession(
     tools,
     sessionManager,
   };
-  if (ctx?.authStorage) options.authStorage = ctx.authStorage;
-  if (ctx?.modelRegistry) options.modelRegistry = ctx.modelRegistry;
+  if (ctx?.modelRuntime) options.modelRuntime = ctx.modelRuntime;
   if (ctx?.settingsManager) options.settingsManager = ctx.settingsManager;
   if (config.session_resources === 'lean') {
     const DefaultResourceLoader = piSdk.DefaultResourceLoader;
@@ -146,7 +145,7 @@ async function createSession(
       noPromptTemplates: true,
       noThemes: true,
       noContextFiles: true,
-      systemPrompt,
+      systemPromptOverride: () => systemPrompt,
       extensionsOverride: isolateSubagentExtensions,
     });
     await resourceLoader.reload();
@@ -155,6 +154,24 @@ async function createSession(
   }
   const created = await createAgentSession(options);
   return { ...created, nested_session_path: resolvedSessionPath };
+}
+
+function createSessionAbortBridge(session: any, signal: AbortSignal) {
+  let abortPromise: Promise<void> | undefined;
+  const abortSession = async (): Promise<void> => {
+    if (!abortPromise) {
+      abortPromise = Promise.resolve(session?.abort?.()).then(() => undefined, () => undefined);
+    }
+    await abortPromise;
+  };
+  const onAbort = () => { void abortSession(); };
+  signal.addEventListener('abort', onAbort, { once: true });
+  return {
+    abortSession,
+    dispose() {
+      signal.removeEventListener('abort', onAbort);
+    },
+  };
 }
 
 function selectedModel(input: { ctx: any; definition: SubagentDefinition; profile: EffectiveSubagentProfile }): any | undefined {
@@ -190,7 +207,12 @@ export const sdkSubagentRunner: SubagentRunner = async ({ definition, task, task
     const { session, nested_session_path: resolvedNestedSessionPath } = await createSession(model, cwd, tools, effort, config, ctx, systemPrompt, nested_session_path);
     onActivity?.({ message: 'nested session ready', nested_session_path: resolvedNestedSessionPath });
     const unregisterInteractionSession = registerInteractionSubagentSession(session, definition, taskId, parentPiSessionId ?? ctx?.sessionManager?.getSessionId?.());
+    const abortBridge = createSessionAbortBridge(session, signal);
     try {
+      if (signal.aborted) {
+        await abortBridge.abortSession();
+        throw new Error('Subagent was aborted');
+      }
       const effectiveSystemPrompt = typeof session.systemPrompt === 'string' ? session.systemPrompt : systemPrompt;
       const { result, usage, thread_snapshot, interaction_request } = await promptWithInactivity(
         session,
@@ -207,9 +229,14 @@ export const sdkSubagentRunner: SubagentRunner = async ({ definition, task, task
         continuation?.prompt ?? task,
         continuation?.attempt ?? 1,
       );
+      if (signal.aborted) {
+        await abortBridge.abortSession();
+        throw new Error('Subagent was aborted');
+      }
       await secureSessionPathWhenReady(resolvedNestedSessionPath);
       return { result, usage, thread_snapshot, interaction_request, system_prompt: effectiveSystemPrompt, nested_session_path: resolvedNestedSessionPath };
     } catch (error) {
+      if (signal.aborted) await abortBridge.abortSession();
       await secureSessionPathWhenReady(resolvedNestedSessionPath);
       throw error instanceof SubagentStructuredError
         ? error
@@ -220,6 +247,7 @@ export const sdkSubagentRunner: SubagentRunner = async ({ definition, task, task
             operation: 'session.prompt',
           }));
     } finally {
+      abortBridge.dispose();
       unregisterInteractionSession();
     }
   }

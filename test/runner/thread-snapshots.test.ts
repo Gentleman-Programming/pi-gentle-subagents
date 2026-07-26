@@ -173,7 +173,7 @@ describe('subagent runner thread snapshots', () => {
     expect(String(bashItem.result.preview)).toContain('x');
   });
 
-  it('does not classify provider stall while a tool is still active, but still stalls after the tool ends', async () => {
+  it('stalls long-running tool calls when they stop sending updates', async () => {
     vi.useFakeTimers();
     vi.resetModules();
     let subscriber: ((event: unknown) => void) | undefined;
@@ -184,7 +184,6 @@ describe('subagent runner thread snapshots', () => {
         return vi.fn();
       }),
       prompt: vi.fn(async () => {
-        subscriber?.({ type: 'message_update', assistantMessageEvent: { type: 'toolcall_delta', delta: '{"path":"openspec/changes/websearch-extension/spec.md"}' } });
         subscriber?.({ type: 'tool_execution_start', toolCallId: 'read-1', toolName: 'read', args: { path: 'openspec/changes/websearch-extension/spec.md' } });
         return new Promise<void>((resolve) => { resolvePrompt = resolve; });
       }),
@@ -201,7 +200,7 @@ describe('subagent runner thread snapshots', () => {
       const { sdkSubagentRunner } = await import('../../src/runner.js');
       const promise = sdkSubagentRunner({
         definition,
-        task: 'apply work that stalls after tools',
+        task: 'apply work that stalls inside a tool',
         cwd: '/workspace',
         ctx: { model: { provider: 'test', id: 'model' } },
         config: { ...config, stall_timeout_ms: 20 },
@@ -215,19 +214,44 @@ describe('subagent runner thread snapshots', () => {
       await vi.dynamicImportSettled();
       expect(session.prompt).toHaveBeenCalledOnce();
       await vi.advanceTimersByTimeAsync(600);
-      expect(session.abort).not.toHaveBeenCalled();
-      subscriber?.({ type: 'tool_execution_end', toolCallId: 'read-1', toolName: 'read', isError: false, result: { content: [{ type: 'text', text: 'spec body' }] } });
-      await vi.advanceTimersByTimeAsync(600);
       const error = await rejection;
       expect(error).toBeInstanceOf(Error);
-      expect(error.error_metadata).toMatchObject({
-        category: 'stall_timeout',
-        phase: 'runner_session',
-      });
+      expect(error.error_metadata).toMatchObject({ category: 'stall_timeout', phase: 'runner_session' });
       expect(session.abort).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('records Pi retry and settled lifecycle events in transcript and status rows without incrementing attempt', async () => {
+    let subscriber: ((event: unknown) => void) | undefined;
+    const session = {
+      subscribe: vi.fn((callback: (event: unknown) => void) => {
+        subscriber = callback;
+        return vi.fn();
+      }),
+      prompt: vi.fn(async () => {
+        subscriber?.({ type: 'auto_retry_start', attempt: 2, maxAttempts: 3 });
+        subscriber?.({ type: 'auto_retry_end', attempt: 2, maxAttempts: 3 });
+        subscriber?.({ type: 'agent_settled', reason: 'completed' });
+      }),
+      messages: [{ role: 'assistant', content: [{ type: 'text', text: 'final answer after retry' }] }],
+      dispose: vi.fn(async () => undefined),
+    };
+
+    const { result, activities } = await runWithSession(session);
+
+    const transcript = activities.map((activity) => activity.transcript ?? '').join('\n');
+    expect(transcript).toContain('auto retry start');
+    expect(transcript).toContain('auto retry end');
+    expect(transcript).toContain('agent settled');
+    expect(result.thread_snapshot?.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'attempt', attempt: 1 }),
+      expect.objectContaining({ type: 'status', text: expect.stringContaining('auto retry start') }),
+      expect.objectContaining({ type: 'status', text: expect.stringContaining('auto retry end') }),
+      expect.objectContaining({ type: 'status', text: expect.stringContaining('agent settled') }),
+    ]));
+    expect(result.thread_snapshot?.items.filter((item: any) => item.type === 'attempt')).toHaveLength(1);
   });
 
   it('keeps toolcall deltas out of live assistant text while preserving native tool rows', async () => {

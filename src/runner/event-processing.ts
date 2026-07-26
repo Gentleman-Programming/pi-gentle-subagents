@@ -76,6 +76,9 @@ function eventTranscript(event: any): string {
   if (event?.type === 'tool_execution_update') return event.partialResult ? `\n${sanitizeInteractionTransportText(shortJson(event.partialResult, 500))}\n` : '';
   if (event?.type === 'tool_execution_end') return `\n${event.isError ? 'failed' : 'done'}\n`;
   if (event?.type === 'message_start' && event.message?.role === 'assistant') return '\n\nPreparing for response\n\n';
+  if (event?.type === 'auto_retry_start') return '\n\nauto retry start\n';
+  if (event?.type === 'auto_retry_end') return '\n\nauto retry end\n';
+  if (event?.type === 'agent_settled') return '\n\nagent settled\n';
   return '';
 }
 
@@ -85,6 +88,9 @@ function activityMessage(event: any, transcriptChunk: string): string | undefine
   if (event?.type === 'tool_execution_start') return formatToolCall(event.toolName ?? 'tool', event.args ?? event.input ?? {});
   if (event?.type === 'tool_execution_end') return event.isError ? 'tool failed' : 'tool completed';
   if (event?.type === 'tool_execution_update') return 'tool update';
+  if (event?.type === 'auto_retry_start') return 'auto retry start';
+  if (event?.type === 'auto_retry_end') return 'auto retry end';
+  if (event?.type === 'agent_settled') return 'agent settled';
   return undefined;
 }
 
@@ -123,7 +129,7 @@ export async function promptWithInactivity(
   prompt: string,
   stallTimeoutMs: number,
   signal: AbortSignal,
-  onActivity?: (activity: { message: string; output?: string; prompt?: string; system_prompt?: string; transcript?: string; usage?: UsageStats; effort?: ThinkingEffort; thread_snapshot?: SubagentThreadSnapshot; interaction_request?: SubagentInteractionRequest; nested_session_path?: string }) => void,
+  onActivity?: (activity: { message: string; output?: string; prompt?: string; system_prompt?: string; transcript?: string; usage?: UsageStats; effort?: ThinkingEffort; thread_snapshot?: SubagentThreadSnapshot; interaction_request?: SubagentInteractionRequest; nested_session_path?: string; pi_retry_attempts?: number }) => void,
   delegatedContext?: string,
   cwd?: string,
   systemPrompt?: string,
@@ -142,8 +148,9 @@ export async function promptWithInactivity(
   let stalled = false;
   const initialMessagesLength = promptLabel === 'continuation' && Array.isArray(session.messages) ? session.messages.length : 0;
   let sawToolActivity = false;
-  const activeToolCallIds = new Set<string>();
-  onActivity?.({ message: 'session started', prompt, system_prompt: systemPrompt, transcript, usage, thread_snapshot: snapshotBuilder.snapshot() });
+  let piRetryAttempts = 0;
+  const activeToolCalls = new Map<string, { startTime: number; lastUpdate: number }>();
+  onActivity?.({ message: 'session started', prompt, system_prompt: systemPrompt, transcript, usage, thread_snapshot: snapshotBuilder.snapshot(), pi_retry_attempts: piRetryAttempts });
   const unsubscribe = session.subscribe?.((event: any) => {
     lastActivity = Date.now();
     debugLog(cwd, 'runner_event', {
@@ -157,12 +164,17 @@ export async function promptWithInactivity(
       resultKeys: event?.result && typeof event.result === 'object' ? Object.keys(event.result) : undefined,
       interactionCarrier: event?.type === 'tool_execution_end' ? summarizeInteractionCarrier(event?.result) : undefined,
     });
+    if (event?.type === 'auto_retry_start') piRetryAttempts += 1;
     if (typeof event?.type === 'string' && event.type.startsWith('tool_execution_')) {
       sawToolActivity = true;
       registerSubagentRuntimeToolDefinition(taskId, event?.toolName, session.getToolDefinition?.(event?.toolName));
       const toolCallId = eventToolCallId(event);
-      if (event.type === 'tool_execution_start' && toolCallId) activeToolCallIds.add(toolCallId);
-      if (event.type === 'tool_execution_end' && toolCallId) activeToolCallIds.delete(toolCallId);
+      if (event.type === 'tool_execution_start' && toolCallId) activeToolCalls.set(toolCallId, { startTime: Date.now(), lastUpdate: Date.now() });
+      if (event.type === 'tool_execution_update' && toolCallId) {
+        const toolCall = activeToolCalls.get(toolCallId);
+        if (toolCall) toolCall.lastUpdate = Date.now();
+      }
+      if (event.type === 'tool_execution_end' && toolCallId) activeToolCalls.delete(toolCallId);
     }
     snapshotBuilder.update(event);
     const thread_snapshot = snapshotBuilder.snapshot();
@@ -179,7 +191,7 @@ export async function promptWithInactivity(
         hasPrompt: Boolean(interactionRequest.prompt),
         hasPayload: interactionRequest.payload !== undefined,
       });
-      onActivity?.({ message: 'interaction required', output, transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest });
+      onActivity?.({ message: 'interaction required', output, transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts });
     } else if (event?.type === 'tool_execution_end' && event?.isError) {
       const latest = consumeLatestInteractionRequest({ origin: 'subagent' });
       if (latest) {
@@ -193,7 +205,7 @@ export async function promptWithInactivity(
           hasPayload: latest.payload !== undefined,
           carrier: summarizeInteractionCarrier(event.result),
         });
-        onActivity?.({ message: 'interaction required', output, transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest });
+        onActivity?.({ message: 'interaction required', output, transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts });
       } else {
         debugLog(cwd, 'interaction_bridge_payload_missing', { toolName: event.toolName, carrier: summarizeInteractionCarrier(event.result) });
       }
@@ -205,28 +217,34 @@ export async function promptWithInactivity(
     if (event?.type === 'message_end' && event.message?.role === 'assistant') usage = addUsage(usage, event.message.usage);
     if (event?.type === 'message_update' && typeof delta === 'string') {
       output += sanitizeInteractionTransportText(delta);
-      onActivity?.({ message: 'streaming response', output, transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest });
+      onActivity?.({ message: 'streaming response', output, transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts });
       return;
     }
     if (event?.type === 'message_update' && messageEvent?.type === 'thinking_delta') {
-      onActivity?.({ message: 'streaming thinking', output, transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest });
+      onActivity?.({ message: 'streaming thinking', output, transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts });
       return;
     }
     const message = activityMessage(event, transcriptChunk);
-    if (message) onActivity?.({ message, transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest });
+    if (message) onActivity?.({ message, transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts });
   }) ?? (() => {});
   const interval = setInterval(() => {
-    if (!stalled && activeToolCallIds.size === 0 && Date.now() - lastActivity > stallTimeoutMs) {
-      stalled = true;
-      transcript += `\n\n--- stall ---\nstalled for ${stallTimeoutMs}ms; aborting session\n`;
-      onActivity?.({ message: `stalled for ${stallTimeoutMs}ms; aborting session`, output, transcript, usage, thread_snapshot: snapshotBuilder.snapshot(), interaction_request: latestInteractionRequest });
-      session.abort?.().catch?.(() => {});
+    if (stalled) return;
+    if (activeToolCalls.size === 0) {
+      if (Date.now() - lastActivity <= stallTimeoutMs) return;
+    } else {
+      const oldestToolUpdate = Math.min(...[...activeToolCalls.values()].map((entry) => entry.lastUpdate));
+      if (Date.now() - oldestToolUpdate <= stallTimeoutMs) return;
     }
+    stalled = true;
+    transcript += `\n\n--- stall ---\nstalled for ${stallTimeoutMs}ms; aborting session\n`;
+    onActivity?.({ message: `stalled for ${stallTimeoutMs}ms; aborting session`, output, transcript, usage, thread_snapshot: snapshotBuilder.snapshot(), interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts });
+    session.abort?.().catch?.(() => {});
   }, Math.min(5000, Math.max(500, stallTimeoutMs / 4)));
   try {
     let promptError: unknown;
     try {
-      await session.prompt(prompt, { signal });
+      if (signal.aborted) throw new Error('Subagent was aborted');
+      await session.prompt(prompt);
     } catch (error) {
       promptError = error;
     }
@@ -242,7 +260,7 @@ export async function promptWithInactivity(
         details: { stall_timeout_ms: String(stallTimeoutMs) },
       });
       transcript += `\n\n# subagent failure\n\n${metadata.message}`;
-      onActivity?.({ message: `failed: ${metadata.message}`, output: '', transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest });
+      onActivity?.({ message: `failed: ${metadata.message}`, output: '', transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts });
       throw new SubagentStructuredError(metadata);
     }
     if (promptError) throw promptError;
@@ -254,7 +272,7 @@ export async function promptWithInactivity(
       });
       if (metadata) {
         transcript += `\n\n# subagent failure\n\n${metadata.message}`;
-        onActivity?.({ message: `failed: ${metadata.message}`, output: '', transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest });
+        onActivity?.({ message: `failed: ${metadata.message}`, output: '', transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts });
         throw new SubagentStructuredError(metadata);
       }
     }
@@ -281,11 +299,11 @@ export async function promptWithInactivity(
             partial_result_available: false,
           });
       transcript += `\n\n# subagent failure\n\n${metadata.message}`;
-      onActivity?.({ message: `failed: ${metadata.message}`, output: '', transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest });
+      onActivity?.({ message: `failed: ${metadata.message}`, output: '', transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts });
       throw new SubagentStructuredError(metadata);
     }
     transcript += `\n\n# final assistant text\n\n${collected}`;
-    onActivity?.({ message: 'collected final response', output: collected, transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest });
+    onActivity?.({ message: 'collected final response', output: collected, transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts });
     return { result: collected, usage, thread_snapshot, interaction_request: latestInteractionRequest };
   } finally {
     clearInterval(interval);
