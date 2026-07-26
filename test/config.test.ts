@@ -84,11 +84,30 @@ function readJsonl(file: string): any[] {
 }
 
 describe('config and workflow loading', () => {
-  it('parses markdown agents with frontmatter', () => {
-    const parsed = parseFrontmatter('---\nname: analyst\ntools:\n  - read\n---\n# Body');
+  it('parses markdown agents with multiline or comma-separated inline tools', () => {
+    const multiline = parseFrontmatter('---\nname: analyst\ntools:\n  - read\n  - write\n---\n# Body');
+    expect(multiline.data.name).toBe('analyst');
+    expect(multiline.data.tools).toEqual(['read', 'write']);
+    expect(multiline.body).toContain('# Body');
+
+    const inline = parseFrontmatter('---\nname: analyst\ndescription: reads, writes, and reviews\ntools: read, write, bash\n---\n# Body');
+    expect(inline.data.description).toBe('reads, writes, and reviews');
+    expect(inline.data.tools).toEqual(['read', 'write', 'bash']);
+    expect(inline.body).toContain('# Body');
+  });
+
+  it('loads comma-separated inline tools as the effective allowlist', () => {
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents', 'worker.md'), `---\nname: worker\ntools: read, write, bash\n---\n# Worker`);
+
+    expect(loadSubagents(tmp).find((agent) => agent.name === 'worker')?.tools).toEqual(['read', 'write', 'bash']);
+  });
+
+  it('parses Windows CRLF frontmatter', () => {
+    const parsed = parseFrontmatter('---\r\nname: analyst\r\ntools: read, write\r\n---\r\n# Body');
+
     expect(parsed.data.name).toBe('analyst');
-    expect(parsed.data.tools).toEqual(['read']);
-    expect(parsed.body).toContain('# Body');
+    expect(parsed.data.tools).toEqual(['read', 'write']);
+    expect(parsed.body).toBe('# Body');
   });
 
   it('loads agent names from markdown files and config default model/effort', () => {
@@ -149,6 +168,30 @@ describe('config and workflow loading', () => {
       'project-only:project agents only',
       'shared:project subagents shared',
     ]);
+  });
+
+  it('blocks ambiguous mixed tools definitions and reports the affected subagent', () => {
+    const agentDir = path.join(tmp, 'global-agent');
+    fs.mkdirSync(path.join(agentDir, 'subagents'), { recursive: true });
+    fs.writeFileSync(path.join(agentDir, 'subagents', 'worker.md'), `---\nname: worker\ntools:\n  - read\n---\n# Global Worker`);
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents', 'worker.md'), `---\nname: worker\ntools: read, write\n  - bash\n---\n# Project Worker`);
+
+    const agents = withAgentDir(agentDir, () => loadSubagents(tmp));
+    const warnings = withAgentDir(agentDir, () => subagentSourceWarnings(tmp));
+
+    expect(agents.find((agent) => agent.name === 'worker')).toBeUndefined();
+    expect(warnings).toContainEqual(expect.stringContaining('Subagent "worker"'));
+    expect(warnings).toContainEqual(expect.stringContaining(path.join(tmp, '.pi', 'subagents', 'worker.md')));
+    expect(warnings).toContainEqual(expect.stringContaining('choose either comma-separated inline tools or a multiline YAML tools list'));
+    expect(warnings).toContainEqual(expect.stringContaining('not loaded'));
+  });
+
+  it('blocks repeated tools declarations that use both supported formats', () => {
+    const filePath = path.join(tmp, '.pi', 'subagents', 'worker.md');
+    fs.writeFileSync(filePath, `---\nname: worker\ntools: read, write\ntools:\n  - bash\n---\n# Worker`);
+
+    expect(loadSubagents(tmp).find((agent) => agent.name === 'worker')).toBeUndefined();
+    expect(subagentSourceWarnings(tmp)).toContainEqual(expect.stringContaining('Subagent "worker"'));
   });
 
   it('reports duplicate names between agents and subagents at the same scope', () => {

@@ -34,18 +34,39 @@ function parseScalar(value: string): any {
   return trimmed.replace(/^['"]|['"]$/g, '');
 }
 
-export function parseFrontmatter(text: string): { data: Record<string, any>; body: string } {
-  if (!text.startsWith('---\n')) return { data: {}, body: text };
-  const end = text.indexOf('\n---', 4);
-  if (end === -1) return { data: {}, body: text };
-  const raw = text.slice(4, end).trim();
-  const body = text.slice(end + 4).replace(/^\r?\n/, '');
+interface ParsedFrontmatter {
+  data: Record<string, any>;
+  body: string;
+  issues: string[];
+}
+
+const AMBIGUOUS_TOOLS_ISSUE = 'choose either comma-separated inline tools or a multiline YAML tools list, not both';
+
+function parseInlineTools(value: string): string[] {
+  return value.split(',').map((item) => String(parseScalar(item))).filter(Boolean);
+}
+
+function parseFrontmatterWithIssues(text: string): ParsedFrontmatter {
+  const opening = text.match(/^---\r?\n/);
+  if (!opening) return { data: {}, body: text, issues: [] };
+  const remainder = text.slice(opening[0].length);
+  const closing = /(?:^|\r?\n)---(?=\r?\n|$)/.exec(remainder);
+  if (!closing) return { data: {}, body: text, issues: [] };
+  const raw = remainder.slice(0, closing.index).trim();
+  const body = remainder.slice(closing.index + closing[0].length).replace(/^\r?\n/, '');
   const data: Record<string, any> = {};
   let currentKey: string | undefined;
+  let toolsDeclarationCount = 0;
+  let toolsFormat: 'inline' | 'multiline' | undefined;
+  let ambiguousTools = false;
   for (const line of raw.split(/\r?\n/)) {
     if (!line.trim()) continue;
     const list = line.match(/^\s*-\s+(.+)$/);
     if (list && currentKey) {
+      if (currentKey === 'tools') {
+        if (toolsFormat === 'inline') ambiguousTools = true;
+        toolsFormat ??= 'multiline';
+      }
       if (!Array.isArray(data[currentKey])) data[currentKey] = [];
       data[currentKey].push(parseScalar(list[1]));
       continue;
@@ -54,9 +75,23 @@ export function parseFrontmatter(text: string): { data: Record<string, any>; bod
     if (!m) continue;
     currentKey = m[1];
     const value = m[2];
-    if (!value) data[currentKey] = [];
-    else data[currentKey] = parseScalar(value);
+    if (currentKey === 'tools') {
+      const format = value.trim() ? 'inline' : 'multiline';
+      if (toolsDeclarationCount > 0 || (toolsFormat && toolsFormat !== format)) ambiguousTools = true;
+      toolsDeclarationCount += 1;
+      toolsFormat = format;
+      data[currentKey] = format === 'inline' ? parseInlineTools(value) : [];
+    } else if (!value) {
+      data[currentKey] = [];
+    } else {
+      data[currentKey] = parseScalar(value);
+    }
   }
+  return { data, body, issues: ambiguousTools ? [AMBIGUOUS_TOOLS_ISSUE] : [] };
+}
+
+export function parseFrontmatter(text: string): { data: Record<string, any>; body: string } {
+  const { data, body } = parseFrontmatterWithIssues(text);
   return { data, body };
 }
 
@@ -265,18 +300,32 @@ export function resetGlobalSubagentModelProfileField(input: { agentName: string;
   resetSubagentModelProfileField({ ...input, scope: 'global' });
 }
 
-function loadSubagentsFromDir(dir: string, scope: SubagentDefinitionScope): SubagentDefinition[] {
+interface BlockedSubagentDefinition {
+  name: string;
+  filePath: string;
+  issues: string[];
+}
+
+function loadSubagentsFromDir(
+  dir: string,
+  scope: SubagentDefinitionScope,
+  onBlocked?: (blocked: BlockedSubagentDefinition) => void,
+): SubagentDefinition[] {
   if (!fs.existsSync(dir)) return [];
   return fs.readdirSync(dir)
     .filter((f) => f.endsWith('.md'))
     .sort()
-    .map((file) => {
+    .flatMap((file) => {
       const filePath = path.join(dir, file);
-      const { data, body } = parseFrontmatter(fs.readFileSync(filePath, 'utf8'));
+      const { data, body, issues } = parseFrontmatterWithIssues(fs.readFileSync(filePath, 'utf8'));
       const name = String(data.name || path.basename(file, '.md')).trim().toLowerCase();
+      if (issues.length > 0) {
+        onBlocked?.({ name, filePath, issues });
+        return [];
+      }
       const description = String(data.description || `${name} subagent`).trim();
       const tools = sanitizeTools(Array.isArray(data.tools) ? data.tools.map(String) : DEFAULT_TOOLS);
-      return { name, description, filePath, instructions: body.trim(), model: parseModel(data.model), effort: parseEffort(data.effort ?? data.thinking_level ?? data.thinkingLevel), tools, scope };
+      return [{ name, description, filePath, instructions: body.trim(), model: parseModel(data.model), effort: parseEffort(data.effort ?? data.thinking_level ?? data.thinkingLevel), tools, scope }];
     });
 }
 
@@ -290,14 +339,19 @@ function agentsDirSources(cwd: string): Array<{ scope: 'global' | 'project'; kin
   ];
 }
 
+function blockedSubagentWarning(blocked: BlockedSubagentDefinition): string {
+  return `Subagent "${blocked.name}" in ${blocked.filePath} has ambiguous tools frontmatter: ${blocked.issues.join('; ')}. The subagent was not loaded.`;
+}
+
 export function subagentSourceWarnings(cwd: string): string[] {
   const warnings: string[] = [];
+  const onBlocked = (blocked: BlockedSubagentDefinition) => warnings.push(blockedSubagentWarning(blocked));
   for (const scope of ['global', 'project'] as const) {
     const sources = agentsDirSources(cwd).filter((source) => source.scope === scope);
     const agentsSource = sources.find((source) => source.kind === 'agents')!;
     const subagentsSource = sources.find((source) => source.kind === 'subagents')!;
-    const agents = loadSubagentsFromDir(agentsSource.dir, agentsSource.scope);
-    const subagents = loadSubagentsFromDir(subagentsSource.dir, subagentsSource.scope);
+    const agents = loadSubagentsFromDir(agentsSource.dir, agentsSource.scope, onBlocked);
+    const subagents = loadSubagentsFromDir(subagentsSource.dir, subagentsSource.scope, onBlocked);
     const subagentNames = new Map(subagents.map((definition) => [definition.name, definition]));
     for (const agent of agents) {
       const subagent = subagentNames.get(agent.name);
@@ -311,7 +365,12 @@ export function subagentSourceWarnings(cwd: string): string[] {
 export function loadSubagents(cwd: string): SubagentDefinition[] {
   const byName = new Map<string, SubagentDefinition>();
   for (const source of agentsDirSources(cwd)) {
-    for (const agent of loadSubagentsFromDir(source.dir, source.scope)) byName.set(agent.name, agent);
+    const blockedNames = new Set<string>();
+    const definitions = loadSubagentsFromDir(source.dir, source.scope, (blocked) => blockedNames.add(blocked.name));
+    for (const agent of definitions) {
+      if (!blockedNames.has(agent.name)) byName.set(agent.name, agent);
+    }
+    for (const name of blockedNames) byName.delete(name);
   }
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
