@@ -578,6 +578,51 @@ describe('subagents panel and extension ui', () => {
     }
   });
 
+  it('toggles thinking visibility with injected app.thinking.toggle keybindings and ctrl+t', () => {
+    resetPiComponentCacheForTests();
+    const packageRoot = path.join(tmp, 'fake-pi-panel-thinking-keybindings-package');
+    fs.mkdirSync(path.join(packageRoot, 'dist'), { recursive: true });
+    fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({ name: '@earendil-works/pi-coding-agent', main: 'index.cjs' }));
+    fs.writeFileSync(path.join(packageRoot, 'dist', 'cli.js'), '#!/usr/bin/env node\n');
+    const shimDir = path.join(tmp, 'bin-panel-thinking-keybindings');
+    fs.mkdirSync(shimDir);
+    fs.symlinkSync(path.join(packageRoot, 'dist', 'cli.js'), path.join(shimDir, 'pi'));
+    fs.writeFileSync(path.join(packageRoot, 'index.cjs'), `
+      exports.getMarkdownTheme = () => ({});
+      exports.AssistantMessageComponent = class {
+        constructor(message, hideThinkingBlock) {
+          this.message = message;
+          this.hideThinkingBlock = hideThinkingBlock;
+        }
+        render() { return ['thinking-hidden:' + this.hideThinkingBlock + ':' + this.message.content[0].thinking]; }
+      };
+    `);
+    const oldArgv1 = process.argv[1];
+    process.argv[1] = path.join(shimDir, 'pi');
+    try {
+      const task: SubagentTask = {
+        id: 'subtask_component_thinking_keybindings',
+        agent: 'analyst',
+        mode: 'task',
+        status: 'completed',
+        task: 'toggle thinking visibility',
+        created_at: new Date().toISOString(),
+        thread_snapshot: { version: 1, source: 'events', items: [{ type: 'assistant', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'private reasoning' }] } }] },
+      };
+      const keybindings = { matches: (data: string, keybinding: string) => keybinding === 'app.thinking.toggle' && data === '\u001b[116;5u' };
+      const panel = new SubagentsHistoryPanel([task], { fg: (_name: string, text: string) => text }, () => undefined, createSubagentsPanelKeyMatcher(keybindings), (text) => text.length, (text, width) => text.length > width ? text.slice(0, width) : text, { cwd: tmp });
+
+      expect(panel.render(160).join('\n')).toContain('thinking-hidden:false:private reasoning');
+      panel.handleInput('\u001b[116;5u');
+      expect(panel.render(160).join('\n')).toContain('thinking-hidden:true:private reasoning');
+      panel.handleInput('\u0014');
+      expect(panel.render(160).join('\n')).toContain('thinking-hidden:false:private reasoning');
+    } finally {
+      process.argv[1] = oldArgv1;
+      resetPiComponentCacheForTests();
+    }
+  });
+
   it('matches injected keybindings for panel navigation, scrolling, and detail cancel controls', () => {
     const matcher = createSubagentsPanelKeyMatcher({
       matches: (data: string, keybinding: string) => ({

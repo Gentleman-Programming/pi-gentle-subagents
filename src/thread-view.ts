@@ -292,7 +292,7 @@ function renderAssistantItem(item: SubagentAssistantItem, context: SubagentThrea
   if (typeof componentCtor === 'function') {
     try {
       const markdownTheme = loadPiComponents()?.getMarkdownTheme?.() ?? context.theme;
-      const rendered = renderComponent(new componentCtor(displayItem.message, false, markdownTheme, 'Thinking...'), width);
+      const rendered = renderComponent(new componentCtor(displayItem.message, context.hideThinkingBlock ?? false, markdownTheme, 'Thinking...'), width);
       if (rendered?.some((line) => line.trim())) return rendered;
     } catch (error) { debugLog(context, 'assistant_component_error', { error }); }
   }

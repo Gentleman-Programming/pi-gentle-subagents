@@ -12,7 +12,7 @@ Pi extension for delegating work to markdown-defined subagents. It registers too
 - Project-scoped task history in a global SQLite data/cache location.
 - TUI history panel via `/subagents` or `ctrl+,`.
 - Claude-mode background handoff via `ctrl+h` by default, configurable in `subagents.json`.
-- TUI execution rendering can expand/collapse tool and rendered component output with `ctrl+o`.
+- TUI execution rendering can expand/collapse tool and rendered component output with `ctrl+o`, and show/hide assistant thinking blocks with `ctrl+t`.
 - Model profile UI via `/subagent-models`.
 - Per-agent/default model and thinking-effort configuration.
 - Tool allowlist filtering that prevents subagents from delegating to other subagents.
@@ -321,6 +321,7 @@ Behavior:
 | `ctrl+,` | Open the TUI subagent history panel in OpenCode mode by default. Configurable via `history_panel_shortcut` in `subagents.json`. |
 | `x` | Cancel the currently selected queued/running subagent from the open history/detail panel by default. Configurable via `detail_cancel_shortcut` in `subagents.json`. |
 | `ctrl+h` | Send the running Claude-mode subagent task to the background by default. Configurable via `background_handoff_shortcut` in `subagents.json`. |
+| `ctrl+t` | Show or hide assistant thinking blocks in the open subagent execution panel, using Pi's `app.thinking.toggle` keybinding. |
 
 `/subagent-models` writes profile changes to the config that matches each selected definition: project-local subagents write to `.pi/subagents.json`, while global subagents and synthetic SDD phase rows write to `~/.pi/agent/subagents.json` or `$PI_CODING_AGENT_DIR/subagents.json` when `PI_CODING_AGENT_DIR` is set.
 

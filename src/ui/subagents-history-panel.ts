@@ -106,6 +106,7 @@ export class SubagentsHistoryPanel {
   private followTail = true;
   private lastMaxScroll = 0;
   private toolOutputExpanded = false;
+  private hideThinkingBlock = false;
   private hydratedTasks = new Map<string, { signature: string; task: SubagentTask }>();
   private bodyCache = new Map<string, string[]>();
   private lastRenderDebugState?: {
@@ -143,6 +144,10 @@ export class SubagentsHistoryPanel {
     }
     if (this.matchesKey(data, 'ctrl+o') || data === '\u000f') {
       this.toolOutputExpanded = !this.toolOutputExpanded;
+      return;
+    }
+    if (this.matchesKey(data, 'ctrl+t') || data === '\u0014') {
+      this.hideThinkingBlock = !this.hideThinkingBlock;
       return;
     }
     if (this.matchesKey(data, 'detailCancel')) {
@@ -423,7 +428,7 @@ export class SubagentsHistoryPanel {
   }
 
   private bodyCacheKey(task: SubagentTask, width: number): string {
-    return [this.taskSignature(task), width, this.toolOutputExpanded ? 'expanded' : 'collapsed'].join('|');
+    return [this.taskSignature(task), width, this.toolOutputExpanded ? 'expanded' : 'collapsed', this.hideThinkingBlock ? 'thinking-hidden' : 'thinking-visible'].join('|');
   }
 
   private bodyLinesFor(task: SubagentTask, width: number): string[] {
@@ -445,6 +450,7 @@ export class SubagentsHistoryPanel {
         truncateToWidth: this.renderContext.truncateToWidth ?? this.truncateToWidth,
         renderWidth: width,
         toolOutputExpanded: this.toolOutputExpanded,
+        hideThinkingBlock: this.hideThinkingBlock,
       });
       lines = rendered.length ? rendered : [''];
       if ((task.status === 'failed' || task.status === 'cancelled') && task.error && !hasEquivalentSnapshotError(activeSnapshot, task.error)) {

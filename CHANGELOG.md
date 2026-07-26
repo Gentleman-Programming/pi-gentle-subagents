@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.4 - 2026-07-26
+
+### Fixed
+- Added `ctrl+t` thinking visibility toggling to the subagent execution panel, matching Pi's main renderer while respecting the configurable `app.thinking.toggle` keybinding.
+- Kept cached subagent thread rendering synchronized when thinking blocks switch between visible and hidden.
+
 ## 1.4.3 - 2026-07-26
 
 ### Added

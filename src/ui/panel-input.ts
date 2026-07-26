@@ -3,6 +3,7 @@ function matchesKey(data: string, key: string): boolean {
     escape: ['\u001b'],
     'ctrl+c': ['\u0003'],
     'ctrl+o': ['\u000f'],
+    'ctrl+t': ['\u0014'],
     'ctrl+w': ['\u0017'],
     q: ['q', 'Q'],
     up: ['\u001b[A'],
@@ -21,6 +22,7 @@ const PANEL_KEYBINDINGS: Record<string, string[]> = {
   escape: ['app.interrupt', 'tui.select.cancel'],
   'ctrl+c': ['tui.select.cancel'],
   'ctrl+o': ['app.tools.expand'],
+  'ctrl+t': ['app.thinking.toggle'],
   detailCancel: ['subagents.detail.cancel'],
   up: ['tui.select.up', 'tui.editor.cursorUp'],
   down: ['tui.select.down', 'tui.editor.cursorDown'],
@@ -51,6 +53,7 @@ export function subagentsPanelMouseWheelDelta(data: string): -1 | 1 | undefined 
 export function classifySubagentsPanelInput(data: string, matchesPanelKey: (data: string, key: string) => boolean): { category: string; action: string } {
   if (matchesPanelKey(data, 'escape') || matchesPanelKey(data, 'ctrl+c') || matchesPanelKey(data, 'q')) return { category: 'lifecycle', action: 'close' };
   if (matchesPanelKey(data, 'ctrl+o') || data === '\u000f') return { category: 'display', action: 'toggle_expand' };
+  if (matchesPanelKey(data, 'ctrl+t') || data === '\u0014') return { category: 'display', action: 'toggle_thinking' };
   if (matchesPanelKey(data, 'detailCancel')) return { category: 'task', action: 'cancel_selected' };
   const wheel = subagentsPanelMouseWheelDelta(data);
   if (wheel === -1) return { category: 'scroll', action: 'up' };
