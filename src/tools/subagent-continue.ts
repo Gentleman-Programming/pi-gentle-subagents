@@ -1,5 +1,6 @@
 import { Type } from 'typebox';
 import { readSubagentsConfig } from '../config.js';
+import { resolveContinuationEffectiveMode } from '../continuation-mode.js';
 import type { SubagentManager } from '../manager.js';
 import type { SubagentTask } from '../types.js';
 import { appendSubagentResumeGuidance, backgroundLaunchContent, formatTaskModeContent } from '../render/tools/formatting.js';
@@ -19,6 +20,7 @@ export function createSubagentContinueTool(manager: SubagentManager) {
     parameters: Type.Object({
       task_id: Type.String(),
       prompt: Type.String(),
+      mode: Type.Optional(Type.Union([Type.Literal('task'), Type.Literal('background')])),
       model: Type.Optional(Type.String()),
       effort: Type.Optional(Type.Union([
         Type.Literal('off'),
@@ -36,20 +38,21 @@ export function createSubagentContinueTool(manager: SubagentManager) {
       let latestTasks: SubagentTask[] = [];
       const cwd = ctx?.cwd ?? process.cwd();
       const existing = manager.getTask(params.task_id, cwd);
-      const isBackground = existing?.mode === 'background';
       const config = readSubagentsConfig(cwd);
-      const canBackgroundInClaude = !isBackground && config.mode === 'claude';
+      const effectiveMode = resolveContinuationEffectiveMode({ explicitMode: params.mode, previousTask: existing, config });
+      const isBackground = effectiveMode === 'background';
+      const canBackgroundInTaskMode = effectiveMode === 'task';
       const backgroundShortcut = config.background_handoff_shortcut ?? 'ctrl+h';
       let resolveBackground: ((value: { mode: 'background'; task_ids: string[] }) => void) | undefined;
-      const backgroundPromise = canBackgroundInClaude
+      const backgroundPromise = canBackgroundInTaskMode
         ? new Promise<{ mode: 'background'; task_ids: string[] }>((resolve) => { resolveBackground = resolve; })
         : undefined;
       const emit = () => {
         if (!active || isBackground) return;
         try {
           onUpdate?.({
-            content: [{ type: 'text', text: progressText(latestTasks, frame, { backgroundable: canBackgroundInClaude, backgroundShortcut }) }],
-            details: { tasks: latestTasks.map(compactTaskForToolResult), frame: frame++, backgroundable: canBackgroundInClaude, backgroundShortcut },
+            content: [{ type: 'text', text: progressText(latestTasks, frame, { backgroundable: canBackgroundInTaskMode, backgroundShortcut }) }],
+            details: { tasks: latestTasks.map(compactTaskForToolResult), frame: frame++, backgroundable: canBackgroundInTaskMode, backgroundShortcut },
           });
         } catch {
           active = false;
@@ -57,7 +60,7 @@ export function createSubagentContinueTool(manager: SubagentManager) {
       };
       const interval = isBackground ? undefined : setInterval(emit, 500);
       const uninstallCancel = isBackground ? () => {} : installDoubleEscapeCancel(ctx, manager, () => { cancelledByDoubleEscape = true; });
-      const uninstallBackground = canBackgroundInClaude
+      const uninstallBackground = canBackgroundInTaskMode
         ? installBackgroundHandoffShortcut(ctx, manager, () => latestTasks.map((task) => task.id), (tasks) => {
           active = false;
           resolveBackground?.({ mode: 'background', task_ids: tasks.map((task) => task.id) });
@@ -89,7 +92,7 @@ export function createSubagentContinueTool(manager: SubagentManager) {
         uninstallBackground();
       }
     },
-    renderCall: (args: any, theme: any) => renderSubagentContinueCall(args, theme, manager.getTask(args.task_id, process.cwd())),
+    renderCall: (args: any, theme: any) => renderSubagentContinueCall(args, theme, manager.getTask(args.task_id, process.cwd()), process.cwd()),
     renderResult: renderSubagentContinueResult,
   };
 }

@@ -20,7 +20,7 @@ describe('tool render helpers', () => {
     expect(rendered).toContain('effort: high');
   });
 
-  it('renders a dim ctrl+, and command hint in the subagent_run title outside claude mode', () => {
+  it('renders a dim history shortcut and command hint in the subagent_run title', () => {
     const manager = new SubagentManager(env.mockRunner());
     let runTool: any;
     const dim = vi.fn((_name: string, text: string) => text);
@@ -32,8 +32,32 @@ describe('tool render helpers', () => {
     expect(dim).toHaveBeenCalledWith('dim', '(ctrl+, or /subagents for details)');
   });
 
-  it('hides ctrl+, from the subagent_run title in claude mode', () => {
-    fs.writeFileSync(path.join(env.tmp, '.pi', 'subagents.json'), JSON.stringify({ mode: 'claude' }));
+  it('renders the effective subagent_run mode when invocation mode is omitted', () => {
+    fs.writeFileSync(path.join(env.tmp, '.pi', 'subagents.json'), JSON.stringify({ default_mode: 'background' }));
+    env.writeAgent('analyst');
+    const previousCwd = process.cwd();
+    process.chdir(env.tmp);
+    try {
+      const manager = new SubagentManager(env.mockRunner());
+      let runTool: any;
+      registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_run') runTool = tool; } }, manager);
+
+      const configDefaultRendered = runTool.renderCall({ agent: 'analyst' }, { fg: (_name: string, text: string) => text, bold: (text: string) => text }).render(200).join('\n');
+      expect(configDefaultRendered).toContain('subagent analyst (background)');
+
+      fs.writeFileSync(path.join(env.tmp, '.pi', 'subagents', 'reviewer.md'), `---\nname: reviewer\ndescription: reviewer agent\nsubagent_mode: task\ntools:\n  - read\n---\n# Agent`);
+      const definitionOverrideRendered = runTool.renderCall({ agent: 'reviewer' }, { fg: (_name: string, text: string) => text, bold: (text: string) => text }).render(200).join('\n');
+      expect(definitionOverrideRendered).toContain('subagent reviewer (task)');
+
+      const explicitOverrideRendered = runTool.renderCall({ agent: 'analyst', mode: 'task' }, { fg: (_name: string, text: string) => text, bold: (text: string) => text }).render(200).join('\n');
+      expect(explicitOverrideRendered).toContain('subagent analyst (task)');
+    } finally {
+      process.chdir(previousCwd);
+    }
+  });
+
+  it('renders the configured history shortcut in the subagent_run title hint', () => {
+    fs.writeFileSync(path.join(env.tmp, '.pi', 'subagents.json'), JSON.stringify({ history_panel_shortcut: 'ctrl+p' }));
     const previousCwd = process.cwd();
     process.chdir(env.tmp);
     try {
@@ -44,9 +68,8 @@ describe('tool render helpers', () => {
 
       const rendered = runTool.renderCall({ agent: 'analyst', mode: 'task' }, { fg: dim, bold: (text: string) => text }).render(200).join('\n');
       expect(rendered).toContain('subagent analyst (task)');
-      expect(rendered).toContain('(/subagents for details)');
-      expect(rendered).not.toContain('ctrl+,');
-      expect(dim).toHaveBeenCalledWith('dim', '(/subagents for details)');
+      expect(rendered).toContain('(ctrl+p or /subagents for details)');
+      expect(dim).toHaveBeenCalledWith('dim', '(ctrl+p or /subagents for details)');
     } finally {
       process.chdir(previousCwd);
     }
@@ -68,7 +91,86 @@ describe('tool render helpers', () => {
     expect(plain).not.toContain('�');
   });
 
-  it('renders a ctrl+h background hint in partial claude task-mode results', () => {
+  it('renders current-last foreground activity without clipping complete tool names', () => {
+    const manager = new SubagentManager(env.mockRunner());
+    let runTool: any;
+    registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_run') runTool = tool; } }, manager);
+    const longToolName = 'workspace_graph_status_with_a_very_long_public_name';
+
+    const rendered = runTool.renderResult({
+      details: {
+        frame: 0,
+        tasks: [{
+          agent: 'analyst',
+          status: 'running',
+          attempt: 1,
+          effort: 'high',
+          model: 'mock/model',
+          last_activity: `running tool: ${longToolName}`,
+          live_activity: {
+            trail: [
+              { kind: 'thinking', label: 'thinking' },
+              { kind: 'streaming_response', label: 'streaming response' },
+              { kind: 'tool_running', label: `running tool: ${longToolName}`, tool_names: [longToolName] },
+            ],
+            current: { kind: 'tool_running', label: `running tool: ${longToolName}`, tool_names: [longToolName] },
+          },
+        }],
+      },
+    }, { isPartial: true }, { fg: (_name: string, text: string) => text, bold: (text: string) => text }).render(30);
+    const plain = rendered.map(env.stripAnsi);
+    const normalized = plain.join('').replace(/\s+/g, ' ');
+
+    expect(normalized).toContain('thinking');
+    expect(normalized).toContain('streaming response');
+    expect(normalized).toContain(longToolName);
+    expect(normalized).not.toContain('…');
+    expect(plain.every((line: string) => line.length <= 30)).toBe(true);
+  });
+
+  it('renders the effective continuation mode from explicit override, previous task state, and config fallback', async () => {
+    fs.writeFileSync(path.join(env.tmp, '.pi', 'subagents.json'), JSON.stringify({ default_mode: 'background' }));
+    env.writeAgent('analyst');
+    const previousCwd = process.cwd();
+    process.chdir(env.tmp);
+    try {
+      const manager = new SubagentManager(env.mockRunner());
+      let continueTool: any;
+      registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_continue') continueTool = tool; } }, manager);
+
+      const backgroundTask = await manager.run({ agent: 'analyst', task: 'persist background mode', mode: 'background' }, { cwd: env.tmp });
+      const backgroundRendered = continueTool.renderCall({ task_id: backgroundTask.task_ids[0], prompt: 'Resume the background attempt.' }, { fg: (_name: string, text: string) => text, bold: (text: string) => text }).render(200).join('\n');
+      expect(backgroundRendered).toContain('subagent analyst (background)');
+
+      const explicitTaskRendered = continueTool.renderCall({ task_id: backgroundTask.task_ids[0], prompt: 'Wait this time.', mode: 'task' }, { fg: (_name: string, text: string) => text, bold: (text: string) => text }).render(200).join('\n');
+      expect(explicitTaskRendered).toContain('subagent analyst (task)');
+
+      const taskTask = await manager.run({ agent: 'analyst', task: 'persist task mode', mode: 'task' }, { cwd: env.tmp });
+      const explicitBackgroundRendered = continueTool.renderCall({ task_id: taskTask.task_ids[0], prompt: 'Resume in background.', mode: 'background' }, { fg: (_name: string, text: string) => text, bold: (text: string) => text }).render(200).join('\n');
+      expect(explicitBackgroundRendered).toContain('subagent analyst (background)');
+
+      const legacyTaskId = 'subtask_legacy_render_continue';
+      const legacySessionPath = path.join(env.tmp, 'legacy-render-session.jsonl');
+      fs.writeFileSync(legacySessionPath, '{"type":"session"}\n');
+      (manager as any).history.upsertTask(env.tmp, {
+        id: legacyTaskId,
+        agent: 'analyst',
+        mode: 'legacy',
+        status: 'completed',
+        task: 'legacy task',
+        created_at: new Date().toISOString(),
+        nested_session_path: legacySessionPath,
+        result: 'legacy result',
+        attempt: 1,
+      } as any);
+      const legacyRendered = continueTool.renderCall({ task_id: legacyTaskId, prompt: 'Resume the legacy task.' }, { fg: (_name: string, text: string) => text, bold: (text: string) => text }).render(200).join('\n');
+      expect(legacyRendered).toContain('subagent analyst (background)');
+    } finally {
+      process.chdir(previousCwd);
+    }
+  });
+
+  it('renders a ctrl+h background hint in partial task-mode results', () => {
     const manager = new SubagentManager(env.mockRunner());
     let runTool: any;
     registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_run') runTool = tool; } }, manager);

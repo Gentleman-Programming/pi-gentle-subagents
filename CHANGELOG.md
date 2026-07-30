@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.5.0 - 2026-07-30
+
+### Added
+- Added cascaded `default_mode` configuration for choosing `task` or `background` execution globally or per project, with project config overriding global config.
+- Added per-definition `subagent_mode` support and mixed multi-agent execution, including effective-mode metadata for each delegated task.
+- Added `subagent_send_message` for safely steering an owned, running background task, with bounded queues, session ownership checks, runtime compatibility checks, and pending/undelivered message counts.
+- Added compact live-activity projections for subagent thinking, responses, and tool execution in task and background rendering.
+
+### Changed
+- Resolved execution mode consistently as explicit invocation `mode`, then definition `subagent_mode`, then config `default_mode`, then the built-in `task` fallback.
+- Removed the separate UI config key `mode` (`opencode` / `claude`) and enabled both behavior families unconditionally.
+- Made the background widget, `/subagents`, configured history shortcut, task-to-background handoff, continuation handoff, and renderer detail hint available without UI-mode gating.
+- Changed background completion delivery to a model-facing follow-up that automatically starts or queues one parent-orchestrator response.
+
+### Fixed
+- Rendered queued and consumed `subagent_send_message` inputs chronologically in the owning `/subagents` detail timeline, including repeated identical messages and persisted post-completion history, without exposing message text in summary surfaces.
+- Added vertical padding around collapsed and expanded subagent completion cards for clearer visual separation.
+- Detected live-steering compatibility from the loaded Pi SDK `VERSION` export instead of resolving an unexported `package.json`, allowing supported global Pi installations such as 0.83.0 to use `subagent_send_message` while known older or unknown runtimes still fail closed.
+- Registered the real nested SDK `session.steer(...)` bridge, accepted bounded same-parent messages before bridge readiness, forwarded them exactly once, rebound ownership per continuation attempt, and kept failed or unconsumed entries accurately counted as undelivered.
+- Rendered the actual effective execution mode in `subagent_run` instead of showing `(task)` when an omitted invocation mode resolved to background.
+- Added explicit `mode` support to `subagent_continue` and resolved continuation mode consistently as explicit override, previous `effective_mode`, previous persisted `mode`, config `default_mode`, then built-in `task`.
+- Kept `subagent_continue` rendering, waiting/background behavior, persisted attempt state, result metadata, handoff, and automatic completion behavior aligned to the same effective continuation mode.
+- Preserved visible background execution and automatic completion handling while keeping explicit task-mode runs eligible for manual background handoff.
+- Prevented live steering messages from leaking across parent sessions, task attempts, completion, cancellation, shutdown, restart, or continuation boundaries.
+
+### Documentation
+- Updated the README and Subagents configuration skill for explicit global/project/definition scope selection, config cascade guidance, `default_mode`, execution-mode precedence, unconditional history/background UI, automatic completion turns, private live background steering, and explicit continuation-mode overrides.
+
 ## 1.4.4 - 2026-07-26
 
 ### Fixed

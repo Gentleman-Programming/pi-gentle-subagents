@@ -3,7 +3,7 @@ import { consumeLatestInteractionRequest, interactionRequestFromCandidate, sanit
 import { registerSubagentRuntimeToolDefinition } from '../thread-view.js';
 import { SubagentStructuredError, classifyAssistantFailure, classifyThrownError, normalizeErrorMetadata } from '../error-metadata.js';
 import type { SubagentInteractionRequest } from '../interaction-channel.js';
-import type { ThinkingEffort, SubagentErrorMetadata, SubagentThreadSnapshot, UsageStats } from '../types.js';
+import type { ThinkingEffort, SubagentErrorMetadata, SubagentLiveActivity, SubagentLiveActivityProjection, SubagentThreadSnapshot, UsageStats } from '../types.js';
 import { ThreadSnapshotBuilder } from './snapshot-builder.js';
 
 function emptyUsage(): UsageStats {
@@ -113,6 +113,65 @@ function eventToolCallId(event: any): string | undefined {
   return event?.toolCallId ?? event?.tool_call_id ?? event?.toolUseId ?? event?.id;
 }
 
+function activityLabel(kind: SubagentLiveActivity['kind'], toolNames: string[] = []): string {
+  if (kind === 'thinking') return 'thinking';
+  if (kind === 'streaming_response') return 'streaming response';
+  const suffix = toolNames.join(', ');
+  if (kind === 'tool_running') return `running tool: ${suffix}`;
+  if (kind === 'tool_completed') return `tool completed: ${suffix}`;
+  return `tool failed: ${suffix}`;
+}
+
+class LiveActivityReducer {
+  private trail: SubagentLiveActivity[] = [];
+  private activeTools = new Map<string, string>();
+  private current?: SubagentLiveActivity;
+
+  project(): SubagentLiveActivityProjection | undefined {
+    if (!this.trail.length && !this.current) return undefined;
+    return { trail: this.trail.slice(-3), current: this.current };
+  }
+
+  thinking(): SubagentLiveActivityProjection | undefined {
+    return this.push({ kind: 'thinking', label: activityLabel('thinking') });
+  }
+
+  streaming(): SubagentLiveActivityProjection | undefined {
+    return this.push({ kind: 'streaming_response', label: activityLabel('streaming_response') });
+  }
+
+  toolStart(id: string | undefined, name: string): SubagentLiveActivityProjection | undefined {
+    if (id) this.activeTools.set(id, name);
+    return this.emitRunningTools();
+  }
+
+  toolUpdate(id: string | undefined): SubagentLiveActivityProjection | undefined {
+    if (id && !this.activeTools.has(id)) return undefined;
+    return this.emitRunningTools();
+  }
+
+  toolEnd(id: string | undefined, name: string, failed: boolean): SubagentLiveActivityProjection | undefined {
+    if (id) this.activeTools.delete(id);
+    this.push({ kind: failed ? 'tool_failed' : 'tool_completed', label: activityLabel(failed ? 'tool_failed' : 'tool_completed', [name]), tool_names: [name] });
+    return this.activeTools.size ? this.emitRunningTools() : this.project();
+  }
+
+  private emitRunningTools(): SubagentLiveActivityProjection | undefined {
+    const toolNames = [...this.activeTools.values()];
+    return this.push({ kind: 'tool_running', label: activityLabel('tool_running', toolNames), tool_names: toolNames });
+  }
+
+  private push(next: SubagentLiveActivity): SubagentLiveActivityProjection | undefined {
+    const last = this.trail.at(-1);
+    if (!last || last.label !== next.label || last.kind !== next.kind) {
+      this.trail.push(next);
+      if (this.trail.length > 3) this.trail = this.trail.slice(-3);
+    }
+    this.current = next;
+    return this.project();
+  }
+}
+
 function failingToolNames(snapshot?: SubagentThreadSnapshot): string[] {
   if (!snapshot?.items?.length) return [];
   const names = new Set<string>();
@@ -129,18 +188,20 @@ export async function promptWithInactivity(
   prompt: string,
   stallTimeoutMs: number,
   signal: AbortSignal,
-  onActivity?: (activity: { message: string; output?: string; prompt?: string; system_prompt?: string; transcript?: string; usage?: UsageStats; effort?: ThinkingEffort; thread_snapshot?: SubagentThreadSnapshot; interaction_request?: SubagentInteractionRequest; nested_session_path?: string; pi_retry_attempts?: number }) => void,
+  onActivity?: (activity: { message: string; output?: string; prompt?: string; system_prompt?: string; transcript?: string; usage?: UsageStats; effort?: ThinkingEffort; thread_snapshot?: SubagentThreadSnapshot; interaction_request?: SubagentInteractionRequest; nested_session_path?: string; pi_retry_attempts?: number; live_activity?: SubagentLiveActivityProjection }) => void,
   delegatedContext?: string,
   cwd?: string,
   systemPrompt?: string,
   taskId?: string,
-  previousSnapshot?: SubagentThreadSnapshot,
   promptLabel: 'delegated_task' | 'continuation' = 'delegated_task',
   displayPrompt = prompt,
   attempt = 1,
+  onQueuedMessageStart?: () => void,
+  previousSnapshot?: SubagentThreadSnapshot,
 ): Promise<{ result: string; usage: UsageStats; thread_snapshot?: SubagentThreadSnapshot; interaction_request?: SubagentInteractionRequest }> {
   let output = '';
   const snapshotBuilder = new ThreadSnapshotBuilder(displayPrompt, delegatedContext, cwd, previousSnapshot, promptLabel, attempt);
+  const liveActivity = new LiveActivityReducer();
   let latestInteractionRequest: SubagentInteractionRequest | undefined;
   let usage = emptyUsage();
   let transcript = `${systemPrompt ? `# system prompt\n\n${systemPrompt}\n\n` : ''}# ${promptLabel === 'continuation' ? 'continuation prompt' : 'delegated prompt'}\n\n${prompt}\n\n# subagent execution\n`;
@@ -149,8 +210,9 @@ export async function promptWithInactivity(
   const initialMessagesLength = promptLabel === 'continuation' && Array.isArray(session.messages) ? session.messages.length : 0;
   let sawToolActivity = false;
   let piRetryAttempts = 0;
+  let sawInitialUserMessage = false;
   const activeToolCalls = new Map<string, { startTime: number; lastUpdate: number }>();
-  onActivity?.({ message: 'session started', prompt, system_prompt: systemPrompt, transcript, usage, thread_snapshot: snapshotBuilder.snapshot(), pi_retry_attempts: piRetryAttempts });
+  onActivity?.({ message: 'session started', prompt, system_prompt: systemPrompt, transcript, usage, thread_snapshot: snapshotBuilder.snapshot(), pi_retry_attempts: piRetryAttempts, live_activity: liveActivity.project() });
   const unsubscribe = session.subscribe?.((event: any) => {
     lastActivity = Date.now();
     debugLog(cwd, 'runner_event', {
@@ -165,6 +227,10 @@ export async function promptWithInactivity(
       interactionCarrier: event?.type === 'tool_execution_end' ? summarizeInteractionCarrier(event?.result) : undefined,
     });
     if (event?.type === 'auto_retry_start') piRetryAttempts += 1;
+    if (event?.type === 'message_start' && event?.message?.role === 'user') {
+      if (sawInitialUserMessage) onQueuedMessageStart?.();
+      sawInitialUserMessage = true;
+    }
     if (typeof event?.type === 'string' && event.type.startsWith('tool_execution_')) {
       sawToolActivity = true;
       registerSubagentRuntimeToolDefinition(taskId, event?.toolName, session.getToolDefinition?.(event?.toolName));
@@ -176,7 +242,7 @@ export async function promptWithInactivity(
       }
       if (event.type === 'tool_execution_end' && toolCallId) activeToolCalls.delete(toolCallId);
     }
-    snapshotBuilder.update(event);
+    const snapshotUpdate = snapshotBuilder.update(event);
     const thread_snapshot = snapshotBuilder.snapshot();
     const transcriptChunk = eventTranscript(event);
     transcript += transcriptChunk;
@@ -191,7 +257,7 @@ export async function promptWithInactivity(
         hasPrompt: Boolean(interactionRequest.prompt),
         hasPayload: interactionRequest.payload !== undefined,
       });
-      onActivity?.({ message: 'interaction required', output, transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts });
+      onActivity?.({ message: 'interaction required', output, transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts, live_activity: liveActivity.project() });
     } else if (event?.type === 'tool_execution_end' && event?.isError) {
       const latest = consumeLatestInteractionRequest({ origin: 'subagent' });
       if (latest) {
@@ -205,10 +271,13 @@ export async function promptWithInactivity(
           hasPayload: latest.payload !== undefined,
           carrier: summarizeInteractionCarrier(event.result),
         });
-        onActivity?.({ message: 'interaction required', output, transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts });
+        onActivity?.({ message: 'interaction required', output, transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts, live_activity: liveActivity.project() });
       } else {
         debugLog(cwd, 'interaction_bridge_payload_missing', { toolName: event.toolName, carrier: summarizeInteractionCarrier(event.result) });
       }
+    }
+    if (snapshotUpdate.activityMessage) {
+      onActivity?.({ message: snapshotUpdate.activityMessage, output, transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts, live_activity: liveActivity.project() });
     }
     const messageEvent = event?.assistantMessageEvent;
     const delta = messageEvent?.type === 'text_delta' && typeof messageEvent.delta === 'string'
@@ -217,15 +286,25 @@ export async function promptWithInactivity(
     if (event?.type === 'message_end' && event.message?.role === 'assistant') usage = addUsage(usage, event.message.usage);
     if (event?.type === 'message_update' && typeof delta === 'string') {
       output += sanitizeInteractionTransportText(delta);
-      onActivity?.({ message: 'streaming response', output, transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts });
+      onActivity?.({ message: 'streaming response', output, transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts, live_activity: liveActivity.streaming() });
       return;
     }
     if (event?.type === 'message_update' && messageEvent?.type === 'thinking_delta') {
-      onActivity?.({ message: 'streaming thinking', output, transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts });
+      onActivity?.({ message: 'streaming thinking', output, transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts, live_activity: liveActivity.thinking() });
       return;
     }
     const message = activityMessage(event, transcriptChunk);
-    if (message) onActivity?.({ message, transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts });
+    if (!message) return;
+    const toolCallId = eventToolCallId(event);
+    const toolName = event?.toolName ?? event?.name ?? 'tool';
+    const projection = event?.type === 'tool_execution_start'
+      ? liveActivity.toolStart(toolCallId, toolName)
+      : event?.type === 'tool_execution_update'
+        ? liveActivity.toolUpdate(toolCallId)
+        : event?.type === 'tool_execution_end'
+          ? liveActivity.toolEnd(toolCallId, toolName, Boolean(event?.isError))
+          : liveActivity.project();
+    onActivity?.({ message, transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts, live_activity: projection });
   }) ?? (() => {});
   const interval = setInterval(() => {
     if (stalled) return;
@@ -237,7 +316,7 @@ export async function promptWithInactivity(
     }
     stalled = true;
     transcript += `\n\n--- stall ---\nstalled for ${stallTimeoutMs}ms; aborting session\n`;
-    onActivity?.({ message: `stalled for ${stallTimeoutMs}ms; aborting session`, output, transcript, usage, thread_snapshot: snapshotBuilder.snapshot(), interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts });
+    onActivity?.({ message: `stalled for ${stallTimeoutMs}ms; aborting session`, output, transcript, usage, thread_snapshot: snapshotBuilder.snapshot(), interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts, live_activity: liveActivity.project() });
     session.abort?.().catch?.(() => {});
   }, Math.min(5000, Math.max(500, stallTimeoutMs / 4)));
   try {
@@ -260,7 +339,7 @@ export async function promptWithInactivity(
         details: { stall_timeout_ms: String(stallTimeoutMs) },
       });
       transcript += `\n\n# subagent failure\n\n${metadata.message}`;
-      onActivity?.({ message: `failed: ${metadata.message}`, output: '', transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts });
+      onActivity?.({ message: `failed: ${metadata.message}`, output: '', transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts, live_activity: liveActivity.project() });
       throw new SubagentStructuredError(metadata);
     }
     if (promptError) throw promptError;
@@ -272,7 +351,7 @@ export async function promptWithInactivity(
       });
       if (metadata) {
         transcript += `\n\n# subagent failure\n\n${metadata.message}`;
-        onActivity?.({ message: `failed: ${metadata.message}`, output: '', transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts });
+        onActivity?.({ message: `failed: ${metadata.message}`, output: '', transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts, live_activity: liveActivity.project() });
         throw new SubagentStructuredError(metadata);
       }
     }
@@ -299,11 +378,11 @@ export async function promptWithInactivity(
             partial_result_available: false,
           });
       transcript += `\n\n# subagent failure\n\n${metadata.message}`;
-      onActivity?.({ message: `failed: ${metadata.message}`, output: '', transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts });
+      onActivity?.({ message: `failed: ${metadata.message}`, output: '', transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts, live_activity: liveActivity.project() });
       throw new SubagentStructuredError(metadata);
     }
     transcript += `\n\n# final assistant text\n\n${collected}`;
-    onActivity?.({ message: 'collected final response', output: collected, transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts });
+    onActivity?.({ message: 'collected final response', output: collected, transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts, live_activity: liveActivity.project() });
     return { result: collected, usage, thread_snapshot, interaction_request: latestInteractionRequest };
   } finally {
     clearInterval(interval);

@@ -1,4 +1,4 @@
-import { truncateToWidth } from '../render/text-width.js';
+import { wrapLineToWidth } from '../render/text-width.js';
 import type { SubagentTask } from '../types.js';
 
 type ClaudeBackgroundWidgetEntry = {
@@ -28,10 +28,8 @@ function matchesKey(data: string, key: string): boolean {
   return keys[key]?.includes(data) ?? data === key;
 }
 
-function clip(text: string | undefined, limit = 120): string {
-  if (!text) return '';
-  const normalized = text.replace(/\s+/g, ' ').trim();
-  return normalized.length > limit ? `${normalized.slice(0, Math.max(0, limit - 1))}…` : normalized;
+function normalize(text: string | undefined): string {
+  return text ? text.replace(/\s+/g, ' ').trim() : '';
 }
 
 function isActiveBackgroundTask(task: SubagentTask): boolean {
@@ -43,7 +41,7 @@ function buildClaudeBackgroundWidgetEntries(tasks: SubagentTask[]): ClaudeBackgr
   if (!active.length) return [];
   return [
     { key: 'main', line: 'main' },
-    ...active.map((task) => ({ key: task.id, line: `${task.agent} ${clip(task.last_activity ?? task.task ?? task.id)}` })),
+    ...active.map((task) => ({ key: task.id, line: `${task.agent} ${normalize(task.live_activity?.current?.label ?? task.last_activity ?? task.task ?? task.id)}` })),
   ];
 }
 
@@ -156,7 +154,7 @@ export class ClaudeBackgroundWidget {
   invalidate(): void {}
 
   render(width: number): string[] {
-    return this.state.renderLines().map((line) => truncateToWidth(this.decorate(line), width));
+    return this.state.renderLines().flatMap((line) => wrapLineToWidth(this.decorate(line), width));
   }
 
   handleInput(data: string): void {

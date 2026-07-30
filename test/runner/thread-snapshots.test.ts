@@ -173,6 +173,35 @@ describe('subagent runner thread snapshots', () => {
     expect(String(bashItem.result.preview)).toContain('x');
   });
 
+  it('retains latest-three distinct safe activity transitions and strips payload sentinels', async () => {
+    let subscriber: ((event: unknown) => void) | undefined;
+    const session = {
+      subscribe: vi.fn((callback: (event: unknown) => void) => {
+        subscriber = callback;
+        return vi.fn();
+      }),
+      prompt: vi.fn(async () => {
+        subscriber?.({ type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', delta: 'secret-thought-sentinel' } });
+        subscriber?.({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'stream me' } });
+        subscriber?.({ type: 'tool_execution_start', toolCallId: 'tool-1', toolName: 'workspace_graph_status', args: { token: 'tool-arg-sentinel' } });
+        subscriber?.({ type: 'tool_execution_update', toolCallId: 'tool-1', toolName: 'workspace_graph_status', partialResult: { text: 'tool-update-sentinel' } });
+        subscriber?.({ type: 'tool_execution_end', toolCallId: 'tool-1', toolName: 'workspace_graph_status', isError: false, result: { text: 'tool-result-sentinel' } });
+      }),
+      messages: [{ role: 'assistant', content: [{ type: 'text', text: 'final answer' }] }],
+      dispose: vi.fn(async () => undefined),
+    };
+
+    const { activities } = await runWithSession(session);
+    const latest = [...activities].reverse().find((activity) => activity.live_activity?.trail?.length);
+    expect(latest?.live_activity?.trail?.map((entry: any) => entry.label)).toEqual([
+      'streaming response',
+      'running tool: workspace_graph_status',
+      'tool completed: workspace_graph_status',
+    ]);
+    expect(latest?.live_activity?.current?.label).toBe('tool completed: workspace_graph_status');
+    expect(JSON.stringify(latest?.live_activity)).not.toContain('sentinel');
+  });
+
   it('stalls long-running tool calls when they stop sending updates', async () => {
     vi.useFakeTimers();
     vi.resetModules();
@@ -403,6 +432,109 @@ describe('subagent runner thread snapshots', () => {
       expect.objectContaining({ type: 'assistant', message: expect.objectContaining({ content: [expect.objectContaining({ type: 'text', text: 'final answer after thinking' })] }) }),
     ]));
     expect(JSON.stringify(result.thread_snapshot)).not.toContain('draft text that should not replace final');
+  });
+
+  it('projects queued steering messages live, consumes them chronologically once, and keeps their text out of non-thread activity fields', async () => {
+    let subscriber: ((event: unknown) => void) | undefined;
+    const steeringText = 'read package.json now';
+    const session = {
+      subscribe: vi.fn((callback: (event: unknown) => void) => {
+        subscriber = callback;
+        return vi.fn();
+      }),
+      prompt: vi.fn(async () => {
+        subscriber?.({ type: 'queue_update', steering: [steeringText] });
+        subscriber?.({ type: 'message_start', message: { role: 'user', content: [{ type: 'text', text: steeringText }] } });
+        subscriber?.({ type: 'tool_execution_start', toolCallId: 'read-1', toolName: 'read', args: { path: 'package.json' } });
+        subscriber?.({ type: 'tool_execution_end', toolCallId: 'read-1', toolName: 'read', isError: false, result: { content: [{ type: 'text', text: '{"name":"pkg"}' }] } });
+      }),
+      messages: [
+        { role: 'assistant', content: [{ type: 'toolCall', id: 'read-1', name: 'read', arguments: { path: 'package.json' } }] },
+        { role: 'assistant', content: [{ type: 'text', text: 'dependency summary' }] },
+      ],
+      dispose: vi.fn(async () => undefined),
+    };
+
+    const { result, activities } = await runWithSession(session);
+    const queuedSnapshot = activities.find((activity) => activity.message === 'live steering queue updated')?.thread_snapshot;
+    const consumedSnapshot = activities.find((activity) => activity.message === 'live steering message consumed')?.thread_snapshot;
+
+    expect(queuedSnapshot?.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'user', label: 'queued', text: steeringText }),
+    ]));
+    expect(consumedSnapshot?.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'user', label: 'user', text: steeringText }),
+    ]));
+    expect(consumedSnapshot?.items.filter((item: any) => item.type === 'user' && item.text === steeringText)).toHaveLength(1);
+
+    const labels = result.thread_snapshot?.items.map((item: any) => {
+      if (item.type === 'attempt') return `attempt:${item.attempt}`;
+      if (item.type === 'user') return `${item.label}:${item.text}`;
+      if (item.type === 'tool') return `tool:${item.name}`;
+      if (item.type === 'assistant') return `assistant:${item.message.content.map((part: any) => part.type === 'toolCall' ? `toolCall:${part.name}` : part.text).join('|')}`;
+      return item.type;
+    });
+
+    expect(labels).toEqual([
+      'attempt:1',
+      'delegated_task:capture a thread snapshot',
+      `user:${steeringText}`,
+      'assistant:toolCall:read',
+      'tool:read',
+      'assistant:dependency summary',
+    ]);
+    expect(result.thread_snapshot?.items.filter((item: any) => item.type === 'user' && item.text === steeringText)).toHaveLength(1);
+    expect(JSON.stringify(result)).not.toContain(`queued:${steeringText}`);
+    expect(JSON.stringify(activities.map(({ message, output, transcript }: any) => ({ message, output, transcript })))).not.toContain(steeringText);
+  });
+
+  it('projects repeated identical steering messages with fifo matching and no duplicates', async () => {
+    let subscriber: ((event: unknown) => void) | undefined;
+    const steeringText = 'same steering text';
+    const session = {
+      subscribe: vi.fn((callback: (event: unknown) => void) => {
+        subscriber = callback;
+        return vi.fn();
+      }),
+      prompt: vi.fn(async () => {
+        subscriber?.({ type: 'queue_update', steering: [steeringText, steeringText] });
+        subscriber?.({ type: 'queue_update', steering: [steeringText, steeringText] });
+        subscriber?.({ type: 'message_start', message: { role: 'user', content: [{ type: 'text', text: steeringText }] } });
+        subscriber?.({ type: 'message_start', message: { role: 'user', content: [{ type: 'text', text: steeringText }] } });
+      }),
+      messages: [{ role: 'assistant', content: [{ type: 'text', text: 'done' }] }],
+      dispose: vi.fn(async () => undefined),
+    };
+
+    const { result } = await runWithSession(session);
+    const projected = result.thread_snapshot?.items.filter((item: any) => item.type === 'user' && item.text === steeringText) ?? [];
+
+    expect(projected).toHaveLength(2);
+    expect(projected.every((item: any) => item.label === 'user')).toBe(true);
+    expect(new Set(projected.map((item: any) => item.id)).size).toBe(2);
+  });
+
+  it('persists an unconsumed queued steering row at settlement without fabricating a consumed user row', async () => {
+    let subscriber: ((event: unknown) => void) | undefined;
+    const steeringText = 'still queued';
+    const session = {
+      subscribe: vi.fn((callback: (event: unknown) => void) => {
+        subscriber = callback;
+        return vi.fn();
+      }),
+      prompt: vi.fn(async () => {
+        subscriber?.({ type: 'queue_update', steering: [steeringText] });
+      }),
+      messages: [{ role: 'assistant', content: [{ type: 'text', text: 'done without consuming' }] }],
+      dispose: vi.fn(async () => undefined),
+    };
+
+    const { result } = await runWithSession(session);
+    const projected = result.thread_snapshot?.items.filter((item: any) => item.type === 'user' && item.text === steeringText) ?? [];
+
+    expect(projected).toEqual([
+      expect.objectContaining({ type: 'user', label: 'queued', text: steeringText }),
+    ]);
   });
 
   it('finalizes assistant text from session messages when available while preserving streamed activity snapshots', async () => {

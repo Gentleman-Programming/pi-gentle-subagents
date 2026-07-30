@@ -198,6 +198,38 @@ describe('background widget', () => {
     expect(bold).toHaveBeenCalledWith('● tool-smoke Running sleep 15.');
   });
 
+  it('renders one wrapped current background activity and never a trail', () => {
+    const now = new Date().toISOString();
+    const state = new ClaudeBackgroundWidgetState(
+      () => [{
+        id: 'task-1',
+        agent: 'tool-smoke',
+        mode: 'background',
+        status: 'running',
+        task: 'sleep 15',
+        created_at: now,
+        live_activity: {
+          trail: [
+            { kind: 'thinking', label: 'thinking' },
+            { kind: 'streaming_response', label: 'streaming response' },
+            { kind: 'tool_running', label: 'running tool: workspace_graph_status_with_a_very_long_public_name', tool_names: ['workspace_graph_status_with_a_very_long_public_name'] },
+          ],
+          current: { kind: 'tool_running', label: 'running tool: workspace_graph_status_with_a_very_long_public_name', tool_names: ['workspace_graph_status_with_a_very_long_public_name'] },
+        },
+      }] as any,
+    );
+    const widget = new ClaudeBackgroundWidget(state, { fg: (_name: string, text: string) => `\u001b[33m${text}\u001b[39m`, bold: (text: string) => `\u001b[1m${text}\u001b[22m` });
+
+    const rendered = widget.render(24).map((line) => line.replace(/\u001b\[[0-9;]*m/g, ''));
+    const normalized = rendered.join(' ').replace(/\s+/g, ' ');
+    const condensed = normalized.replace(/\s+/g, '');
+
+    expect(condensed).toContain('runningtool:workspace_graph_status_with_a_very_long_public_name');
+    expect(normalized).not.toContain('thinking');
+    expect(normalized).not.toContain('streaming response');
+    expect(rendered.every((line) => line.length <= 24)).toBe(true);
+  });
+
   it('returns to input on main enter and opens the selected subagent on enter', () => {
     const now = new Date().toISOString();
     const state = new ClaudeBackgroundWidgetState(

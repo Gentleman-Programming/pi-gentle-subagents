@@ -141,6 +141,37 @@ describe('manager and history integration', () => {
     expect(result.results?.map((r) => r.agent).sort()).toEqual(['analyst', 'reviewer']);
   });
 
+  it('resolves explicit, definition, config, and built-in mode defaults and waits only effective task members', async () => {
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ default_mode: 'background' }));
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents', 'analyst.md'), `---\nname: analyst\ndescription: analyst agent\nsubagent_mode: task\ntools:\n  - read\n---\n# Agent`);
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents', 'reviewer.md'), `---\nname: reviewer\ndescription: reviewer agent\ntools:\n  - read\n---\n# Agent`);
+
+    const releaseReviewer = vi.fn<() => void>();
+    const runner: SubagentRunner = async ({ definition }) => {
+      if (definition.name === 'reviewer') {
+        return await new Promise((resolve) => {
+          releaseReviewer.mockImplementationOnce(() => resolve({ result: 'reviewer handled review plan', model: 'mock/model', fallback_used: false }));
+        });
+      }
+      return { result: 'analyst handled review plan', model: 'mock/model', fallback_used: false };
+    };
+    const manager = new SubagentManager(runner);
+
+    const result = await manager.run({ agents: ['analyst', 'reviewer'], task: 'review plan' }, { cwd: tmp });
+
+    expect(result.mode).toBe('mixed');
+    expect(result.waited_task_ids).toEqual([result.results?.find((task) => task.agent === 'analyst')?.id]);
+    expect(result.background_task_ids).toEqual([result.results?.find((task) => task.agent === 'reviewer')?.id]);
+    expect(result.results?.map((task) => ({ agent: task.agent, mode: task.mode, effective_mode: task.effective_mode, status: task.status }))).toEqual([
+      { agent: 'analyst', mode: 'task', effective_mode: 'task', status: 'completed' },
+      { agent: 'reviewer', mode: 'background', effective_mode: 'background', status: 'running' },
+    ]);
+    expect(manager.getTask(result.background_task_ids[0]!)?.status).toBe('running');
+
+    releaseReviewer();
+    await vi.waitFor(() => expect(manager.getTask(result.background_task_ids[0]!)?.status).toBe('completed'));
+  });
+
   it('loads subagent markdown definitions only once per multi-agent run', async () => {
     writeAgent('a');
     writeAgent('b');
@@ -290,6 +321,63 @@ describe('manager and history integration', () => {
     expect(runner).toHaveBeenCalledTimes(2);
   });
 
+  it('resolves continuation mode from explicit override, previous effective mode, and config fallback', async () => {
+    writeAgent('analyst');
+    const nestedSessionPath = path.join(tmp, 'continue-effective-mode-session.jsonl');
+    fs.writeFileSync(nestedSessionPath, '{"type":"session"}\n');
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ default_mode: 'background' }));
+    let releaseBackgroundContinuation: (() => void) | undefined;
+    const manager = new SubagentManager(async ({ continuation, nested_session_path, onActivity }) => {
+      onActivity?.({ message: 'nested session ready', nested_session_path: nestedSessionPath } as any);
+      if (!continuation) return { result: 'initial result', model: 'mock/model', fallback_used: false, nested_session_path: nested_session_path ?? nestedSessionPath } as any;
+      if (continuation.prompt === 'resume in background') {
+        return await new Promise((resolve) => {
+          releaseBackgroundContinuation = () => resolve({ result: 'continued in background', model: 'mock/model', fallback_used: false, nested_session_path: nested_session_path ?? nestedSessionPath } as any);
+        });
+      }
+      return { result: `continued: ${continuation.prompt}`, model: 'mock/model', fallback_used: false, nested_session_path: nested_session_path ?? nestedSessionPath } as any;
+    });
+
+    const backgroundTask = await manager.run({ agent: 'analyst', task: 'initial background task', mode: 'background' }, { cwd: tmp });
+    const backgroundTaskId = backgroundTask.task_ids[0]!;
+    await vi.waitFor(() => expect(manager.getTask(backgroundTaskId)?.status).toBe('completed'));
+
+    const explicitTask = await manager.continueTask({ task_id: backgroundTaskId, prompt: 'force task mode', mode: 'task' }, { cwd: tmp });
+    expect(explicitTask).toMatchObject({ mode: 'task', task_ids: [backgroundTaskId] });
+    expect(explicitTask.results?.[0]).toMatchObject({ attempt: 2, mode: 'task', effective_mode: 'task', status: 'completed' });
+
+    const taskTask = await manager.run({ agent: 'analyst', task: 'initial task task', mode: 'task' }, { cwd: tmp });
+    const taskTaskId = taskTask.task_ids[0]!;
+    const explicitBackground = await manager.continueTask({ task_id: taskTaskId, prompt: 'resume in background', mode: 'background' }, { cwd: tmp });
+    expect(explicitBackground).toMatchObject({ mode: 'background', task_ids: [taskTaskId] });
+    expect(manager.getTask(taskTaskId)).toMatchObject({ attempt: 2, mode: 'background', effective_mode: 'background', status: 'running' });
+    releaseBackgroundContinuation?.();
+    await vi.waitFor(() => expect(manager.getTask(taskTaskId)?.status).toBe('completed'));
+
+    const legacyTaskId = 'subtask_legacy_continue_mode';
+    const legacyHistory = new SubagentHistoryStore();
+    legacyHistory.upsertTask(tmp, {
+      id: legacyTaskId,
+      agent: 'analyst',
+      mode: 'legacy',
+      status: 'completed',
+      task: 'legacy continuation',
+      created_at: new Date().toISOString(),
+      nested_session_path: nestedSessionPath,
+      result: 'legacy result',
+      attempt: 1,
+    } as any);
+    const legacyManager = new SubagentManager(async ({ continuation, nested_session_path, onActivity }) => {
+      onActivity?.({ message: 'nested session ready', nested_session_path: nestedSessionPath } as any);
+      return { result: `legacy continued: ${continuation?.prompt}`, model: 'mock/model', fallback_used: false, nested_session_path: nested_session_path ?? nestedSessionPath } as any;
+    }, legacyHistory);
+
+    const legacy = await legacyManager.continueTask({ task_id: legacyTaskId, prompt: 'fallback to config default' }, { cwd: tmp });
+    expect(legacy).toMatchObject({ mode: 'background', task_ids: [legacyTaskId] });
+    expect(legacyManager.getTask(legacyTaskId)).toMatchObject({ attempt: 2, mode: 'background', effective_mode: 'background', status: 'running' });
+    await vi.waitFor(() => expect(legacyManager.getTask(legacyTaskId)?.status).toBe('completed'));
+  });
+
   it('keeps exact-string compatibility for plain and malformed legacy manager failures while attaching metadata', async () => {
     writeAgent('analyst');
     const plainManager = new SubagentManager(async () => { throw new Error('legacy plain failure'); });
@@ -335,6 +423,20 @@ describe('manager and history integration', () => {
     const message = completionMessage(completed);
     expect(message).toContain('Read only this final response');
     expect(message).toContain('analyst handled background work');
+  });
+
+  it('emits exactly one terminal background completion callback per settled task', async () => {
+    writeAgent('analyst');
+    const terminalCallbacks: Array<{ id: string; status: string }> = [];
+    const manager = new SubagentManager(mockRunner(20), undefined, (task) => {
+      terminalCallbacks.push({ id: task.id, status: task.status });
+    });
+
+    const started = await manager.run({ agent: 'analyst', task: 'background callback', mode: 'background' }, { cwd: tmp });
+    const taskId = started.task_ids[0]!;
+    await vi.waitFor(() => expect(manager.getTask(taskId)?.status).toBe('completed'));
+
+    expect(terminalCallbacks).toEqual([{ id: taskId, status: 'completed' }]);
   });
 
   it('can move a running task-mode subagent to background and notify on completion', async () => {
@@ -389,6 +491,165 @@ describe('manager and history integration', () => {
     });
     expect(persisted.filter((entry) => entry.status === 'cancelled')).toHaveLength(1);
     expect(persisted.filter((entry) => entry.status === 'failed')).toHaveLength(0);
+  });
+
+  it('queues same-parent pre-ready messages, flushes them exactly once on bridge readiness, and preserves fail-closed checks', async () => {
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents', 'backgrounder.md'), `---\nname: backgrounder\ndescription: background agent\nsubagent_mode: background\ntools:\n  - read\n---\n# Agent`);
+
+    let registerLiveBridge: ((bridge: any) => void) | undefined;
+    let release: () => void = () => undefined;
+    const steer = vi.fn();
+    const manager = new SubagentManager(async ({ registerLiveBridge: register }) => {
+      registerLiveBridge = register;
+      return await new Promise((resolve) => {
+        release = () => resolve({ result: 'backgrounder done', model: 'mock/model', fallback_used: false });
+      });
+    });
+
+    const sessionCtx = { cwd: tmp, sessionManager: { getSessionId: () => 'parent-a' } };
+    const background = await manager.run({ agent: 'backgrounder', task: 'background work', mode: 'background' }, sessionCtx);
+    const backgroundTaskId = background.task_ids[0]!;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const queued = (manager as any).sendMessage({ task_id: backgroundTaskId, message: 'Need one more constraint.', session_id: 'parent-a' });
+    expect(queued).toMatchObject({ status: 'queued', task_id: backgroundTaskId, pending_message_count: 1 });
+    expect(steer).not.toHaveBeenCalled();
+    expect(manager.getTask(backgroundTaskId)?.pending_message_count).toBe(1);
+
+    const crossSession = (manager as any).sendMessage({ task_id: backgroundTaskId, message: 'Cross-session attempt.', session_id: 'parent-b' });
+    expect(crossSession).toMatchObject({ status: 'rejected', reason: 'not_owner' });
+    expect(manager.getTask(backgroundTaskId)?.pending_message_count).toBe(1);
+
+    const missingCaller = (manager as any).sendMessage({ task_id: backgroundTaskId, message: 'Missing caller identity.' });
+    expect(missingCaller).toMatchObject({ status: 'rejected', reason: 'caller_identity_unavailable' });
+    expect(manager.getTask(backgroundTaskId)?.pending_message_count).toBe(1);
+
+    registerLiveBridge?.({ supported: true, detected_pi_version: '0.82.1', steer });
+    expect(steer).toHaveBeenCalledTimes(1);
+    expect(steer).toHaveBeenCalledWith('Need one more constraint.');
+
+    registerLiveBridge?.({ supported: true, detected_pi_version: '0.82.1', steer });
+    expect(steer).toHaveBeenCalledTimes(1);
+
+    release();
+    await vi.waitFor(() => expect(manager.getTask(backgroundTaskId)?.status).toBe('completed'));
+  });
+
+  it('accepts only same-parent running background tasks and rejects cross-session or foreground targets without mutation', async () => {
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents', 'backgrounder.md'), `---\nname: backgrounder\ndescription: background agent\nsubagent_mode: background\ntools:\n  - read\n---\n# Agent`);
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents', 'tasker.md'), `---\nname: tasker\ndescription: task agent\nsubagent_mode: task\ntools:\n  - read\n---\n# Agent`);
+
+    const releases = new Map<string, () => void>();
+    const runner: SubagentRunner = async ({ definition }) => await new Promise((resolve) => {
+      releases.set(definition.name, () => resolve({ result: `${definition.name} done`, model: 'mock/model', fallback_used: false }));
+    });
+    const manager = new SubagentManager(runner);
+
+    const background = await manager.run({ agent: 'backgrounder', task: 'background work', mode: 'background' }, { cwd: tmp, sessionId: 'parent-a' });
+    const foregroundPromise = manager.run({ agent: 'tasker', task: 'task work', mode: 'task' }, { cwd: tmp, sessionId: 'parent-a' });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const backgroundTaskId = background.task_ids[0]!;
+    const foregroundTaskId = manager.listTasks(tmp).find((task) => task.agent === 'tasker')!.id;
+    const steer = vi.fn();
+    (manager as any).registerLiveBridge(backgroundTaskId, {
+      supported: true,
+      detected_pi_version: '0.82.1',
+      steer,
+    }, 'parent-a', 1);
+
+    const queued = (manager as any).sendMessage({ task_id: backgroundTaskId, message: 'Need one more constraint.', session_id: 'parent-a' });
+    expect(queued).toMatchObject({ status: 'queued', task_id: backgroundTaskId, pending_message_count: 1 });
+    expect(steer).toHaveBeenCalledWith('Need one more constraint.');
+    expect(manager.getTask(backgroundTaskId)?.pending_message_count).toBe(1);
+
+    const crossSession = (manager as any).sendMessage({ task_id: backgroundTaskId, message: 'Cross-session attempt.', session_id: 'parent-b' });
+    expect(crossSession).toMatchObject({ status: 'rejected', reason: 'not_owner' });
+    expect(manager.getTask(backgroundTaskId)?.pending_message_count).toBe(1);
+
+    const foreground = (manager as any).sendMessage({ task_id: foregroundTaskId, message: 'Foreground attempt.', session_id: 'parent-a' });
+    expect(foreground).toMatchObject({ status: 'rejected', reason: 'not_background' });
+
+    releases.get('tasker')?.();
+    await foregroundPromise;
+    releases.get('backgrounder')?.();
+    await vi.waitFor(() => expect(manager.getTask(backgroundTaskId)?.status).toBe('completed'));
+  });
+
+  it('converts post-enqueue settlement, cancellation, and restart races into undelivered counts without replay', async () => {
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents', 'backgrounder.md'), `---\nname: backgrounder\ndescription: background agent\nsubagent_mode: background\ntools:\n  - read\n---\n# Agent`);
+    const releases = new Map<string, () => void>();
+    const manager = new SubagentManager(async ({ definition }) => await new Promise((resolve) => {
+      releases.set(definition.name, () => resolve({ result: `${definition.name} done`, model: 'mock/model', fallback_used: false }));
+    }));
+
+    const started = await manager.run({ agent: 'backgrounder', task: 'background work', mode: 'background' }, { cwd: tmp, sessionId: 'parent-a' });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const taskId = started.task_ids[0]!;
+    (manager as any).registerLiveBridge(taskId, { supported: true, detected_pi_version: '0.82.1', steer: vi.fn() }, 'parent-a', 1);
+    expect((manager as any).sendMessage({ task_id: taskId, message: 'delivered message', session_id: 'parent-a' })).toMatchObject({ status: 'queued', pending_message_count: 1 });
+    (manager as any).consumeQueuedMessage(taskId);
+    expect((manager as any).sendMessage({ task_id: taskId, message: 'undelivered message', session_id: 'parent-a' })).toMatchObject({ status: 'queued', pending_message_count: 1 });
+
+    releases.get('backgrounder')?.();
+    await vi.waitFor(() => expect(manager.getTask(taskId, tmp)?.status).toBe('completed'));
+    expect(manager.getTask(taskId, tmp)).toMatchObject({ pending_message_count: 0, undelivered_message_count: 1 });
+    expect(manager.listTasks(tmp).find((task) => task.id === taskId)).toMatchObject({ undelivered_message_count: 1 });
+
+    const history = new SubagentHistoryStore();
+    history.upsertTask(tmp, {
+      id: 'subtask_orphaned_pending',
+      agent: 'backgrounder',
+      mode: 'background',
+      status: 'running',
+      task: 'stale pending queue',
+      created_at: new Date().toISOString(),
+      attempt: 1,
+      pending_message_count: 2,
+      undelivered_message_count: 0,
+    } as any);
+    const restarted = new SubagentManager(mockRunner(), history);
+    const reconciled = restarted.reconcileOrphanedTasks(tmp);
+    expect(reconciled).toHaveLength(1);
+    expect(restarted.getTask('subtask_orphaned_pending', tmp)).toMatchObject({
+      status: 'interrupted',
+      pending_message_count: 0,
+      undelivered_message_count: 2,
+    });
+  }, 5000);
+
+  it('consumes only forwarded queued messages when an earlier flush failure remains pending', async () => {
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents', 'backgrounder.md'), `---\nname: backgrounder\ndescription: background agent\nsubagent_mode: background\ntools:\n  - read\n---\n# Agent`);
+    const releases = new Map<string, () => void>();
+    const failedMessage = 'first flush failure';
+    const forwardedMessage = 'later forwarded message';
+    const steer = vi.fn((message: string) => {
+      if (message === failedMessage) throw new Error('steer failed');
+    });
+    const manager = new SubagentManager(async ({ definition }) => await new Promise((resolve) => {
+      releases.set(definition.name, () => resolve({ result: `${definition.name} done`, model: 'mock/model', fallback_used: false }));
+    }));
+
+    const started = await manager.run({ agent: 'backgrounder', task: 'background work', mode: 'background' }, { cwd: tmp, sessionId: 'parent-a' });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const taskId = started.task_ids[0]!;
+
+    expect((manager as any).sendMessage({ task_id: taskId, message: failedMessage, session_id: 'parent-a' })).toMatchObject({ status: 'queued', pending_message_count: 1 });
+    (manager as any).registerLiveBridge(taskId, { supported: true, detected_pi_version: '0.82.1', steer }, 'parent-a', 1);
+    expect(steer).toHaveBeenCalledWith(failedMessage);
+
+    expect((manager as any).sendMessage({ task_id: taskId, message: forwardedMessage, session_id: 'parent-a' })).toMatchObject({ status: 'queued', pending_message_count: 2 });
+    expect(steer).toHaveBeenCalledWith(forwardedMessage);
+
+    (manager as any).consumeQueuedMessage(taskId);
+    expect(manager.getTask(taskId, tmp)?.pending_message_count).toBe(1);
+    expect((manager as any).liveStates.get(taskId)?.pendingMessages).toEqual([
+      expect.objectContaining({ message: failedMessage, forwarded: false }),
+    ]);
+
+    releases.get('backgrounder')?.();
+    await vi.waitFor(() => expect(manager.getTask(taskId, tmp)?.status).toBe('completed'));
+    expect(manager.getTask(taskId, tmp)).toMatchObject({ pending_message_count: 0, undelivered_message_count: 1 });
   });
 
   it('waits for cancelled runner cleanup before continuing the same nested session', async () => {
@@ -1289,6 +1550,48 @@ describe('manager and history integration', () => {
       { attempt: 1, result: 'initial result' },
       { attempt: 2, result: 'continued with Please continue with the fix.' },
     ]);
+  });
+
+  it('rebinds continuation ownership per attempt without replaying prior authorization', async () => {
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents', 'backgrounder.md'), `---\nname: backgrounder\ndescription: background agent\nsubagent_mode: background\ntools:\n  - read\n---\n# Agent`);
+
+    const releases = new Map<number, () => void>();
+    const steers = new Map<number, ReturnType<typeof vi.fn>>();
+    const manager = new SubagentManager(async ({ continuation, registerLiveBridge }) => {
+      const attempt = continuation?.attempt ?? 1;
+      const steer = vi.fn();
+      steers.set(attempt, steer);
+      registerLiveBridge?.({ supported: true, detected_pi_version: '0.82.1', steer });
+      return await new Promise((resolve) => {
+        releases.set(attempt, () => resolve({ result: `attempt ${attempt} done`, model: 'mock/model', fallback_used: false, nested_session_path: path.join(tmp, 'continuation-owner-session.jsonl') } as any));
+      });
+    });
+
+    const first = await manager.run({ agent: 'backgrounder', task: 'initial execution', mode: 'background' }, { cwd: tmp, sessionManager: { getSessionId: () => 'parent-a' } });
+    const taskId = first.task_ids[0]!;
+    await vi.waitFor(() => expect(manager.getTask(taskId)?.status).toBe('running'));
+    expect((manager as any).sendMessage({ task_id: taskId, message: 'attempt one', session_id: 'parent-a' })).toMatchObject({ status: 'queued', pending_message_count: 1 });
+    expect(steers.get(1)).toHaveBeenCalledWith('attempt one');
+
+    fs.writeFileSync(path.join(tmp, 'continuation-owner-session.jsonl'), '{"type":"session"}\n');
+    releases.get(1)?.();
+    await vi.waitFor(() => expect(manager.getTask(taskId)?.status).toBe('completed'));
+
+    const continued = await manager.continueTask({ task_id: taskId, prompt: 'Resume under a new owner.' }, { cwd: tmp, sessionManager: { getSessionId: () => 'parent-b' } });
+    expect(continued).toMatchObject({ mode: 'background', task_ids: [taskId] });
+    await vi.waitFor(() => expect(manager.getTask(taskId)?.status).toBe('running'));
+    expect(manager.getTask(taskId)).toMatchObject({ attempt: 2, session_id: 'parent-b', pending_message_count: 0, undelivered_message_count: 0 });
+
+    const staleOwner = (manager as any).sendMessage({ task_id: taskId, message: 'stale owner', session_id: 'parent-a' });
+    expect(staleOwner).toMatchObject({ status: 'rejected', reason: 'not_owner' });
+    expect(steers.get(2)).not.toHaveBeenCalledWith('stale owner');
+
+    const reboundOwner = (manager as any).sendMessage({ task_id: taskId, message: 'attempt two', session_id: 'parent-b' });
+    expect(reboundOwner).toMatchObject({ status: 'queued', pending_message_count: 1 });
+    expect(steers.get(2)?.mock.calls).toEqual([['attempt two']]);
+
+    releases.get(2)?.();
+    await vi.waitFor(() => expect(manager.getTask(taskId)?.status).toBe('completed'));
   });
 
   it('re-resolves configured profiles for continuation overrides without mutating project config and rejects non-terminal continuations', async () => {

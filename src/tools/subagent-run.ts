@@ -50,18 +50,18 @@ export function createSubagentRunTool(manager: SubagentManager, pi: any) {
       let latestTasks: SubagentTask[] = [];
       const isBackground = params.mode === 'background';
       const subagentsConfig = readSubagentsConfig(ctx?.cwd ?? process.cwd());
-      const canBackgroundInClaude = !isBackground && subagentsConfig.mode === 'claude';
+      const canBackgroundInTaskMode = !isBackground;
       const backgroundShortcut = subagentsConfig.background_handoff_shortcut ?? 'ctrl+h';
       let resolveBackground: ((value: { mode: 'background'; task_ids: string[] }) => void) | undefined;
-      const backgroundPromise = canBackgroundInClaude
+      const backgroundPromise = canBackgroundInTaskMode
         ? new Promise<{ mode: 'background'; task_ids: string[] }>((resolve) => { resolveBackground = resolve; })
         : undefined;
       const emit = () => {
         if (!active || isBackground) return;
         try {
           onUpdate?.({
-            content: [{ type: 'text', text: progressText(latestTasks, frame, { backgroundable: canBackgroundInClaude, backgroundShortcut }) }],
-            details: { tasks: latestTasks.map(compactTaskForToolResult), frame: frame++, backgroundable: canBackgroundInClaude, backgroundShortcut },
+            content: [{ type: 'text', text: progressText(latestTasks, frame, { backgroundable: canBackgroundInTaskMode, backgroundShortcut }) }],
+            details: { tasks: latestTasks.map(compactTaskForToolResult), frame: frame++, backgroundable: canBackgroundInTaskMode, backgroundShortcut },
           });
         } catch {
           active = false;
@@ -69,7 +69,7 @@ export function createSubagentRunTool(manager: SubagentManager, pi: any) {
       };
       const interval = isBackground ? undefined : setInterval(emit, 500);
       const uninstallCancel = isBackground ? () => {} : installDoubleEscapeCancel(ctx, manager, () => { cancelledByDoubleEscape = true; });
-      const uninstallBackground = canBackgroundInClaude
+      const uninstallBackground = canBackgroundInTaskMode
         ? installBackgroundHandoffShortcut(ctx, manager, () => latestTasks.map((task) => task.id), (tasks) => {
           active = false;
           resolveBackground?.({ mode: 'background', task_ids: tasks.map((task) => task.id) });

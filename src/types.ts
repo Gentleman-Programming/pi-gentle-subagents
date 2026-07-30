@@ -35,12 +35,12 @@ export type SubagentDefinition = {
   instructions: string;
   model?: ModelRef;
   effort?: ThinkingEffort;
+  subagent_mode?: SubagentMode;
   tools: string[];
   scope?: SubagentDefinitionScope;
 };
 
 export type SubagentSessionResources = 'full' | 'lean';
-export type SubagentUiMode = 'opencode' | 'claude';
 
 export type SubagentsRenderDebugConfig = {
   enabled: true;
@@ -50,6 +50,7 @@ export type SubagentsRenderDebugConfig = {
 export type SubagentsConfig = {
   default_model?: ModelRef;
   default_effort?: ThinkingEffort;
+  default_mode?: SubagentMode;
   model_profiles: SubagentModelProfiles;
   global_model_profiles?: SubagentModelProfiles;
   project_model_profiles?: SubagentModelProfiles;
@@ -58,7 +59,6 @@ export type SubagentsConfig = {
   max_concurrency: number;
   default_tools: string[];
   session_resources?: SubagentSessionResources;
-  mode?: SubagentUiMode;
   background_handoff_shortcut?: string;
   history_panel_shortcut?: string;
   detail_cancel_shortcut?: string;
@@ -77,6 +77,7 @@ export type SubagentRunInput = {
 export type SubagentContinueInput = {
   task_id: string;
   prompt: string;
+  mode?: SubagentMode;
   model?: string;
   effort?: ThinkingEffort;
 };
@@ -190,7 +191,7 @@ export type SubagentUserItem = {
   type: 'user';
   id?: string;
   text: string;
-  label?: 'delegated_task' | 'continuation' | 'context' | 'prompt' | 'user';
+  label?: 'delegated_task' | 'continuation' | 'context' | 'prompt' | 'user' | 'queued';
 };
 
 export type SubagentToolResultPayload = {
@@ -269,10 +270,72 @@ export type SubagentThreadRenderContext = {
   hideThinkingBlock?: boolean;
 };
 
+export type SubagentLiveActivity = {
+  kind: 'thinking' | 'streaming_response' | 'tool_running' | 'tool_completed' | 'tool_failed';
+  label: string;
+  tool_names?: string[];
+};
+
+export type SubagentLiveActivityProjection = {
+  trail: SubagentLiveActivity[];
+  current?: SubagentLiveActivity;
+};
+
+export type SubagentRunMember = {
+  task_id: string;
+  agent: string;
+  effective_mode: SubagentMode;
+  state: SubagentStatus;
+};
+
+export type SubagentRunResult = {
+  mode: SubagentMode | 'mixed';
+  task_ids: string[];
+  waited_task_ids: string[];
+  background_task_ids: string[];
+  results?: SubagentTask[];
+  members?: SubagentRunMember[];
+};
+
+export type LiveSteeringBridge = {
+  detected_pi_version: string | 'unknown';
+  supported: boolean;
+  steer(message: string): void;
+};
+
+export type SendMessageResult =
+  | {
+      status: 'queued';
+      task_id: string;
+      pending_message_count: number;
+      message: 'Message accepted into the steering queue; this does not prove model consumption.';
+    }
+  | {
+      status: 'rejected';
+      task_id?: string;
+      reason:
+        | 'unsupported_runtime'
+        | 'caller_identity_unavailable'
+        | 'not_owner'
+        | 'unknown_task'
+        | 'not_running'
+        | 'not_background'
+        | 'missing_live_session'
+        | 'empty_message'
+        | 'message_too_large'
+        | 'queue_count_limit'
+        | 'queue_bytes_limit'
+        | 'enqueue_failed';
+      required_pi_version?: '>=0.82.1';
+      detected_pi_version?: string | 'unknown';
+      message: string;
+    };
+
 export type SubagentTask = {
   id: string;
   agent: string;
   mode: SubagentMode;
+  effective_mode?: SubagentMode;
   status: SubagentStatus;
   task: string;
   context?: string;
@@ -285,6 +348,9 @@ export type SubagentTask = {
   last_activity_at?: string;
   last_activity?: string;
   output_preview?: string;
+  pending_message_count?: number;
+  undelivered_message_count?: number;
+  live_activity?: SubagentLiveActivityProjection;
   prompt?: string;
   continuation_prompt?: string;
   system_prompt?: string;
@@ -317,5 +383,8 @@ export type SubagentRunner = (input: {
   effectiveProfile?: EffectiveSubagentProfile;
   nested_session_path?: string;
   continuation?: { prompt: string; attempt: number; previous_snapshot?: SubagentThreadSnapshot };
-  onActivity?: (activity: { message: string; output?: string; prompt?: string; system_prompt?: string; transcript?: string; usage?: UsageStats; effort?: ThinkingEffort; thread_snapshot?: SubagentThreadSnapshot; interaction_request?: SubagentInteractionRequest; nested_session_path?: string; pi_retry_attempts?: number }) => void;
+  registerLiveBridge?: (bridge: LiveSteeringBridge) => void;
+  clearLiveBridge?: () => void;
+  onQueuedMessageStart?: () => void;
+  onActivity?: (activity: { message: string; output?: string; prompt?: string; system_prompt?: string; transcript?: string; usage?: UsageStats; effort?: ThinkingEffort; thread_snapshot?: SubagentThreadSnapshot; interaction_request?: SubagentInteractionRequest; nested_session_path?: string; pi_retry_attempts?: number; live_activity?: SubagentLiveActivityProjection }) => void;
 }) => Promise<{ result: string; model?: string; effort?: ThinkingEffort; fallback_used?: boolean; usage?: UsageStats; error_metadata?: SubagentErrorMetadata; thread_snapshot?: SubagentThreadSnapshot; interaction_request?: SubagentInteractionRequest; system_prompt?: string; nested_session_path?: string }>;

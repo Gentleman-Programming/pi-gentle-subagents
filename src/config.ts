@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { ModelRef, SubagentDefinition, SubagentDefinitionScope, SubagentModelProfile, SubagentModelProfiles, SubagentSessionResources, SubagentsConfig, SubagentUiMode, ThinkingEffort } from './types.js';
+import type { ModelRef, SubagentDefinition, SubagentDefinitionScope, SubagentMode, SubagentModelProfile, SubagentModelProfiles, SubagentSessionResources, SubagentsConfig, ThinkingEffort } from './types.js';
 
 const DEFAULT_TOOLS = ['read', 'memory_context', 'memory_search', 'memory_recall', 'memory_get'];
 const DEFAULT_MAX_CONCURRENCY = 5;
@@ -41,6 +41,7 @@ interface ParsedFrontmatter {
 }
 
 const AMBIGUOUS_TOOLS_ISSUE = 'choose either comma-separated inline tools or a multiline YAML tools list, not both';
+const SUBAGENT_MODE_ISSUE = 'subagent_mode must be exactly "task" or "background"';
 
 function parseInlineTools(value: string): string[] {
   return value.split(',').map((item) => String(parseScalar(item))).filter(Boolean);
@@ -149,9 +150,9 @@ function parseSessionResources(value: any): SubagentSessionResources {
   return resources === 'full' ? 'full' : 'lean';
 }
 
-function parseMode(value: any): SubagentUiMode {
-  const mode = String(value ?? 'opencode').trim().toLowerCase();
-  return mode === 'claude' ? 'claude' : 'opencode';
+function parseDefaultMode(value: unknown): SubagentMode {
+  const mode = String(value ?? 'task').trim().toLowerCase();
+  return mode === 'background' ? 'background' : 'task';
 }
 
 function parseCtrlShortcut(value: any, fallback: string): string {
@@ -237,6 +238,7 @@ export function readSubagentsConfig(cwd: string): SubagentsConfig {
   return {
     default_model: parseModel(raw.default_model),
     default_effort: parseEffort(raw.default_effort ?? raw.default_thinking_level ?? raw.thinkingLevel),
+    default_mode: parseDefaultMode(raw.default_mode),
     model_profiles: { ...globalModelProfiles, ...projectModelProfiles },
     global_model_profiles: globalModelProfiles,
     project_model_profiles: projectModelProfiles,
@@ -245,13 +247,20 @@ export function readSubagentsConfig(cwd: string): SubagentsConfig {
     max_concurrency: positiveInteger(raw.max_concurrency, DEFAULT_MAX_CONCURRENCY),
     default_tools: sanitizeTools(Array.isArray(raw.default_tools) ? raw.default_tools.map(String) : DEFAULT_TOOLS),
     session_resources: parseSessionResources(raw.session_resources ?? raw.sessionResources),
-    mode: parseMode(raw.mode),
     background_handoff_shortcut: parseBackgroundHandoffShortcut(raw.background_handoff_shortcut ?? raw.backgroundHandoffShortcut),
     history_panel_shortcut: parseCtrlShortcut(raw.history_panel_shortcut ?? raw.historyPanelShortcut, DEFAULT_HISTORY_PANEL_SHORTCUT),
     detail_cancel_shortcut: parseDetailShortcut(raw.detail_cancel_shortcut ?? raw.detailCancelShortcut),
     debug: parseBoolean(raw.debug, false),
     render_debug: parseRenderDebugConfig(globalRaw, projectRaw),
   };
+}
+
+export function resolveEffectiveSubagentMode(input: {
+  invocationMode?: SubagentMode;
+  definition?: Pick<SubagentDefinition, 'subagent_mode'>;
+  config?: Pick<SubagentsConfig, 'default_mode'>;
+}): SubagentMode {
+  return input.invocationMode ?? input.definition?.subagent_mode ?? input.config?.default_mode ?? 'task';
 }
 
 function projectSubagentsConfigPath(cwd: string): string {
@@ -324,8 +333,13 @@ function loadSubagentsFromDir(
         return [];
       }
       const description = String(data.description || `${name} subagent`).trim();
+      const rawSubagentMode = data.subagent_mode;
+      if (rawSubagentMode !== undefined && rawSubagentMode !== 'task' && rawSubagentMode !== 'background') {
+        onBlocked?.({ name, filePath, issues: [SUBAGENT_MODE_ISSUE] });
+        return [];
+      }
       const tools = sanitizeTools(Array.isArray(data.tools) ? data.tools.map(String) : DEFAULT_TOOLS);
-      return [{ name, description, filePath, instructions: body.trim(), model: parseModel(data.model), effort: parseEffort(data.effort ?? data.thinking_level ?? data.thinkingLevel), tools, scope }];
+      return [{ name, description, filePath, instructions: body.trim(), model: parseModel(data.model), effort: parseEffort(data.effort ?? data.thinking_level ?? data.thinkingLevel), subagent_mode: rawSubagentMode, tools, scope }];
     });
 }
 

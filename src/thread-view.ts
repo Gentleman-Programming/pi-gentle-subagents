@@ -78,7 +78,7 @@ function isThreadItem(value: unknown): value is SubagentThreadItem {
   switch (value.type) {
     case 'attempt': return Number.isInteger(value.attempt) && Number(value.attempt) > 0;
     case 'assistant': return isAssistantItem(value);
-    case 'user': return typeof value.text === 'string' && (value.label === undefined || ['delegated_task', 'continuation', 'context', 'prompt', 'user'].includes(String(value.label)));
+    case 'user': return typeof value.text === 'string' && (value.label === undefined || ['delegated_task', 'continuation', 'context', 'prompt', 'user', 'queued'].includes(String(value.label)));
     case 'tool': return isToolItem(value);
     case 'tool_result': return isToolResultItem(value);
     case 'bash': return isBashItem(value);
@@ -303,6 +303,7 @@ function userItemTitle(item: SubagentUserItem): string | undefined {
   if (item.label === 'context') return 'orchestrator context';
   if (item.label === 'delegated_task') return 'delegated task';
   if (item.label === 'continuation') return 'continuation prompt';
+  if (item.label === 'queued') return 'queued live message';
   return undefined;
 }
 

@@ -8,6 +8,18 @@ import { installSubagentTestEnv } from '../helpers/subagent-test-helpers.js';
 const env = installSubagentTestEnv();
 
 describe('subagent_run tool', () => {
+  it('README documents omitted mode, explicit override, and mixed default batch behavior', async () => {
+    const fs = await import('node:fs');
+    const readme = fs.readFileSync('README.md', 'utf8');
+
+    expect(readme).toContain('subagent_mode');
+    expect(readme).toContain('default_mode');
+    expect(readme).toContain('input.mode ?? definition.subagent_mode ?? config.default_mode');
+    expect(readme).toContain('mode: "mixed"');
+    expect(readme).toContain('waited_task_ids');
+    expect(readme).toContain('background_task_ids');
+  });
+
   it('tells the agent to free the chat and wait for automatic notification after background launch', async () => {
     env.writeAgent('analyst');
     const manager = new SubagentManager(env.mockRunner(50));
@@ -24,11 +36,8 @@ describe('subagent_run tool', () => {
     expect(result.terminate).not.toBe(true);
   });
 
-  it('returns a background handoff result when ctrl+h shortcut is triggered in claude task mode', async () => {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
+  it('returns a background handoff result when ctrl+h shortcut is triggered in task mode', async () => {
     env.writeAgent('analyst');
-    fs.writeFileSync(path.join(env.tmp, '.pi', 'subagents.json'), JSON.stringify({ mode: 'claude' }));
     const manager = new SubagentManager(env.mockRunner(50));
     let runTool: any;
     let shortcutHandler: ((ctx: any) => any) | undefined;
@@ -117,6 +126,33 @@ describe('subagent_run tool', () => {
     expect(result.content[0].text).toContain('Ask the user before resuming');
     expect(result.content[0].text).toContain('model and effort');
     expect(result.content[0].text).toContain('Never switch models automatically');
+  });
+
+  it('reports mixed effective modes while explicit override stays uniform', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    fs.writeFileSync(path.join(env.tmp, '.pi', 'subagents', 'analyst.md'), `---\nname: analyst\ndescription: analyst agent\nsubagent_mode: task\ntools:\n  - read\n---\n# Agent`);
+    fs.writeFileSync(path.join(env.tmp, '.pi', 'subagents', 'reviewer.md'), `---\nname: reviewer\ndescription: reviewer agent\nsubagent_mode: background\ntools:\n  - read\n---\n# Agent`);
+
+    const manager = new SubagentManager(async ({ definition }) => ({ result: `${definition.name} handled delegated work`, model: 'mock/model', fallback_used: false }));
+    let runTool: any;
+    registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_run') runTool = tool; } }, manager);
+
+    const mixed = await runTool.execute('1', { agents: ['analyst', 'reviewer'], task: 'delegated work' }, undefined, undefined, { cwd: env.tmp });
+    expect(mixed.details.mode).toBe('mixed');
+    expect(mixed.details.waited_task_ids).toHaveLength(1);
+    expect(mixed.details.background_task_ids).toHaveLength(1);
+    expect(mixed.details.results.map((task: any) => ({ agent: task.agent, effective_mode: task.effective_mode }))).toEqual([
+      { agent: 'analyst', effective_mode: 'task' },
+      { agent: 'reviewer', effective_mode: 'background' },
+    ]);
+    expect(mixed.content[0].text).toContain('effective mode');
+    expect(mixed.content[0].text).toContain('background');
+
+    const overridden = await runTool.execute('2', { agents: ['analyst', 'reviewer'], task: 'delegated work', mode: 'background' }, undefined, undefined, { cwd: env.tmp });
+    expect(overridden.details.mode).toBe('background');
+    expect(overridden.details.results).toBeUndefined();
+    expect(overridden.content[0].text).toContain('Sent 2 subagent task(s) to background');
   });
 
   it('exposes only safe structured error summaries in subagent_run details while preserving legacy error text', async () => {

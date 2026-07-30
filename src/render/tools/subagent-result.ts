@@ -12,6 +12,7 @@ export function renderSubagentResult(result: any, { expanded }: any, theme: any)
     `Subagent result: ${theme.fg?.('accent', task.agent) ?? task.agent} · status: ${status} · id: ${task.id}`,
     theme.fg?.('dim', modelEffortLine(task)) ?? modelEffortLine(task),
     usage ? (theme.fg?.('dim', `usage: ${usage}`) ?? `usage: ${usage}`) : undefined,
+    theme.fg?.('dim', `undelivered messages: ${task.undelivered_message_count ?? 0}`) ?? `undelivered messages: ${task.undelivered_message_count ?? 0}`,
   ].filter(Boolean).join('\n');
   const finalText = taskFinalText(task, result);
   const body = expanded && finalText

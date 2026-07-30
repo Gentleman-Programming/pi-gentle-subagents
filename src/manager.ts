@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
-import { loadSubagents, parseEffort, parseModel, readSubagentsConfig } from './config.js';
+import { loadSubagents, parseEffort, parseModel, readSubagentsConfig, resolveEffectiveSubagentMode } from './config.js';
+import { resolveContinuationEffectiveMode } from './continuation-mode.js';
 import { writeSubagentsDebugLog } from './debug.js';
 import { sdkSubagentRunner } from './runner.js';
 import { SubagentHistoryStore } from './history.js';
@@ -9,7 +10,7 @@ import { publishInteractionResponse, sanitizeInteractionTransportText } from './
 import { classifyThrownError, deriveErrorString, enrichErrorMetadata, normalizeErrorMetadata, SubagentStructuredError } from './error-metadata.js';
 import { profileSourceLabel, resolveEffectiveSubagentProfile } from './profile-resolver.js';
 import type { SubagentInteractionRequest, SubagentInteractionResponse } from './interaction-channel.js';
-import type { EffectiveSubagentProfile, ModelRef, SubagentContinueInput, SubagentDefinition, SubagentErrorMetadata, SubagentRunInput, SubagentsConfig, SubagentRunner, SubagentTask } from './types.js';
+import type { EffectiveSubagentProfile, LiveSteeringBridge, ModelRef, SendMessageResult, SubagentContinueInput, SubagentDefinition, SubagentErrorMetadata, SubagentRunInput, SubagentRunResult, SubagentsConfig, SubagentRunner, SubagentTask } from './types.js';
 
 type StopDisposition = {
   status: Extract<SubagentTask['status'], 'failed' | 'cancelled' | 'interrupted'>;
@@ -225,8 +226,47 @@ function createLimiter(max: number) {
 const ACTIVITY_RECORD_FLUSH_MS = 250;
 const ACTIVITY_UPDATE_FLUSH_MS = 150;
 const SESSION_TASK_CACHE_MS = 1500;
+const MAX_PENDING_MESSAGES = 16;
+const MAX_MESSAGE_BYTES = 16 * 1024;
+const MAX_PENDING_MESSAGE_BYTES = 64 * 1024;
+
+function utf8ByteLength(text: string): number {
+  return Buffer.byteLength(text, 'utf8');
+}
 
 type PendingRecord = { cwd: string; task: SubagentTask; activity: string; timer: NodeJS.Timeout };
+
+type PendingMessageEntry = {
+  message: string;
+  bytes: number;
+  forwarded: boolean;
+};
+
+type LiveTaskState = {
+  parentSessionId?: string;
+  attempt: number;
+  bridgeReady: boolean;
+  bridge?: LiveSteeringBridge;
+  pendingMessages: PendingMessageEntry[];
+  pendingBytes: number;
+};
+
+function closeLiveState(task: SubagentTask, state: LiveTaskState | undefined): void {
+  const pendingCount = state?.pendingMessages.length ?? task.pending_message_count ?? 0;
+  task.pending_message_count = 0;
+  task.undelivered_message_count = (task.undelivered_message_count ?? 0) + pendingCount;
+  if (!state) return;
+  state.pendingMessages = [];
+  state.pendingBytes = 0;
+  state.bridgeReady = true;
+  delete state.bridge;
+}
+
+type SendMessageInput = {
+  task_id: string;
+  message: string;
+  session_id?: string;
+};
 
 type LaunchAttemptInput = {
   definition: SubagentDefinition;
@@ -255,6 +295,7 @@ export class SubagentManager {
   private sessionTaskCache = new Map<string, { expiresAt: number; tasks: SubagentTask[] }>();
   private runnerSettlements = new Map<string, Promise<void>>();
   private stopDispositions = new Map<string, StopDisposition>();
+  private liveStates = new Map<string, LiveTaskState>();
 
   constructor(
     private runner: SubagentRunner = sdkSubagentRunner,
@@ -311,6 +352,8 @@ export class SubagentManager {
         last_activity_at: interruptedAt,
         last_activity: 'interrupted at startup',
         ended_at: interruptedAt,
+        pending_message_count: 0,
+        undelivered_message_count: (task.undelivered_message_count ?? 0) + (task.pending_message_count ?? 0),
       };
       updated.error_metadata = enrichTerminalMetadata(updated, updated.session_id, normalizeErrorMetadata({
         category: 'interrupted',
@@ -342,6 +385,7 @@ export class SubagentManager {
       if (task.mode === 'background') continue;
       if (task.status !== 'queued' && task.status !== 'running') continue;
       task.mode = 'background';
+      task.effective_mode = 'background';
       this.record(cwd, task, task.last_activity ?? 'running', true);
       changed.push(task);
     }
@@ -350,6 +394,128 @@ export class SubagentManager {
 
   hasRunning(): boolean {
     return [...this.tasks.values()].some((task) => task.status === 'queued' || task.status === 'running' || task.status === 'stopping');
+  }
+
+  registerLiveBridge(taskId: string, bridge: LiveSteeringBridge, parentSessionId: string | undefined, attempt: number): void {
+    const task = this.tasks.get(taskId);
+    const current = this.liveStates.get(taskId);
+    if (current && current.attempt > attempt) return;
+    const state = current && current.attempt === attempt
+      ? current
+      : { attempt, parentSessionId, bridgeReady: false, pendingMessages: [], pendingBytes: 0 };
+    state.parentSessionId = parentSessionId;
+    state.attempt = attempt;
+    state.bridge = bridge;
+    state.bridgeReady = true;
+    this.liveStates.set(taskId, state);
+    if (task) this.flushPendingLiveMessages(task, state);
+  }
+
+  clearLiveBridge(taskId: string, attempt?: number): void {
+    const state = this.liveStates.get(taskId);
+    if (!state) return;
+    if (attempt !== undefined && state.attempt !== attempt) return;
+    state.bridgeReady = true;
+    delete state.bridge;
+  }
+
+  private closeTaskLiveState(task: SubagentTask): void {
+    const state = this.liveStates.get(task.id);
+    closeLiveState(task, state);
+    this.liveStates.delete(task.id);
+  }
+
+  private flushPendingLiveMessages(task: SubagentTask, state: LiveTaskState): void {
+    if (!state.bridgeReady || !state.bridge?.supported) return;
+    for (const entry of state.pendingMessages) {
+      if (entry.forwarded) continue;
+      try {
+        state.bridge.steer(entry.message);
+        entry.forwarded = true;
+      } catch {
+        break;
+      }
+    }
+    task.pending_message_count = state.pendingMessages.length;
+  }
+
+  consumeQueuedMessage(taskId: string): void {
+    const task = this.tasks.get(taskId);
+    const state = this.liveStates.get(taskId);
+    if (!task || !state || !state.pendingMessages.length) return;
+    const forwardedIndex = state.pendingMessages.findIndex((entry) => entry.forwarded);
+    if (forwardedIndex < 0) return;
+    const [entry] = state.pendingMessages.splice(forwardedIndex, 1);
+    state.pendingBytes = Math.max(0, state.pendingBytes - (entry?.bytes ?? 0));
+    task.pending_message_count = state.pendingMessages.length;
+  }
+
+  sendMessage(input: SendMessageInput): SendMessageResult {
+    const task = this.tasks.get(input.task_id);
+    if (!task) {
+      return { status: 'rejected', task_id: input.task_id, reason: 'unknown_task', message: `Subagent task not found: ${input.task_id}` };
+    }
+    if (!input.session_id) {
+      return { status: 'rejected', task_id: input.task_id, reason: 'caller_identity_unavailable', message: 'Unable to verify the calling Pi session for this live message request.' };
+    }
+    if (task.status !== 'running') {
+      return { status: 'rejected', task_id: input.task_id, reason: 'not_running', message: `Subagent task ${input.task_id} is not currently running.` };
+    }
+    if ((task.effective_mode ?? task.mode) !== 'background') {
+      return { status: 'rejected', task_id: input.task_id, reason: 'not_background', message: `Subagent task ${input.task_id} is not currently running in background mode.` };
+    }
+    const liveState = this.liveStates.get(input.task_id);
+    if (!liveState || !liveState.parentSessionId || liveState.parentSessionId !== input.session_id) {
+      return { status: 'rejected', task_id: input.task_id, reason: 'not_owner', message: 'Only the exact originating parent Pi session may message this live background task.' };
+    }
+    if (liveState.bridgeReady && !liveState.bridge) {
+      return { status: 'rejected', task_id: input.task_id, reason: 'missing_live_session', message: `Subagent task ${input.task_id} has no live session available for steering.` };
+    }
+    if (liveState.bridgeReady && liveState.bridge && !liveState.bridge.supported) {
+      return {
+        status: 'rejected',
+        task_id: input.task_id,
+        reason: 'unsupported_runtime',
+        required_pi_version: '>=0.82.1',
+        detected_pi_version: liveState.bridge.detected_pi_version,
+        message: `Live background messaging requires Pi runtime >=0.82.1; detected ${liveState.bridge.detected_pi_version}.`,
+      };
+    }
+    const message = sanitizeInteractionTransportText(input.message ?? '');
+    if (!message.trim()) {
+      return { status: 'rejected', task_id: input.task_id, reason: 'empty_message', message: 'Live background messages must not be empty or whitespace-only.' };
+    }
+    const messageBytes = utf8ByteLength(message);
+    if (messageBytes > MAX_MESSAGE_BYTES) {
+      return { status: 'rejected', task_id: input.task_id, reason: 'message_too_large', message: 'Live background messages must be at most 16 KiB of UTF-8 text.' };
+    }
+    if (liveState.pendingMessages.length >= MAX_PENDING_MESSAGES) {
+      return { status: 'rejected', task_id: input.task_id, reason: 'queue_count_limit', message: 'This subagent already has 16 pending live messages queued.' };
+    }
+    if (liveState.pendingBytes + messageBytes > MAX_PENDING_MESSAGE_BYTES) {
+      return { status: 'rejected', task_id: input.task_id, reason: 'queue_bytes_limit', message: 'This subagent already has too much queued live-message text pending.' };
+    }
+    const entry: PendingMessageEntry = { message, bytes: messageBytes, forwarded: false };
+    liveState.pendingMessages.push(entry);
+    liveState.pendingBytes += messageBytes;
+    task.pending_message_count = liveState.pendingMessages.length;
+    if (liveState.bridgeReady && liveState.bridge?.supported) {
+      try {
+        liveState.bridge.steer(message);
+        entry.forwarded = true;
+      } catch {
+        liveState.pendingMessages.pop();
+        liveState.pendingBytes = Math.max(0, liveState.pendingBytes - messageBytes);
+        task.pending_message_count = liveState.pendingMessages.length;
+        return { status: 'rejected', task_id: input.task_id, reason: 'enqueue_failed', message: 'The live steering queue rejected this message before it could be accepted.' };
+      }
+    }
+    return {
+      status: 'queued',
+      task_id: input.task_id,
+      pending_message_count: liveState.pendingMessages.length,
+      message: 'Message accepted into the steering queue; this does not prove model consumption.',
+    };
   }
 
   private limiter(cwd: string, maxConcurrency: number): ReturnType<typeof createLimiter> {
@@ -367,11 +533,11 @@ export class SubagentManager {
     ctx: any,
     parentSignal?: AbortSignal,
     onTaskUpdate?: (tasks: SubagentTask[]) => void,
-  ): Promise<{ mode: 'task' | 'background'; task_ids: string[]; results?: SubagentTask[] }> {
+  ): Promise<SubagentRunResult> {
     const cwd = ctx?.cwd ?? process.cwd();
     const agents = input.agents?.length ? input.agents : input.agent ? [input.agent] : [];
     if (!agents.length) throw new Error('subagent_run requires agent or agents.');
-    const mode = input.mode ?? 'task';
+    const explicitMode = input.mode;
     const config = readSubagentsConfig(cwd);
 
     const definitions = new Map(loadSubagents(cwd).map((definition) => [definition.name, definition]));
@@ -381,13 +547,28 @@ export class SubagentManager {
     ids = agents.map((agent) => {
       const definition = definitions.get(agent.toLowerCase());
       if (!definition) throw new Error(`Subagent not found: ${agent}`);
-      return this.startOne(definition, input.task, input.context, mode, ctx, config, parentSignal, notifyUpdate, limiter);
+      return this.startOne(definition, input.task, input.context, explicitMode, ctx, config, parentSignal, notifyUpdate, limiter);
     });
     notifyUpdate();
-    if (mode === 'background') return { mode, task_ids: ids };
-    await Promise.all(ids.map((id) => this.wait(id)));
+    const launched = ids.map((id) => this.tasks.get(id)!).filter(Boolean);
+    const waitedTaskIds = launched.filter((task) => task.effective_mode === 'task').map((task) => task.id);
+    const backgroundTaskIds = launched.filter((task) => task.effective_mode === 'background').map((task) => task.id);
+    const resolvedMode: SubagentRunResult['mode'] = explicitMode
+      ?? (waitedTaskIds.length && backgroundTaskIds.length ? 'mixed' : backgroundTaskIds.length ? 'background' : 'task');
+    if (resolvedMode === 'background' && explicitMode === 'background') {
+      return { mode: resolvedMode, task_ids: ids, waited_task_ids: waitedTaskIds, background_task_ids: backgroundTaskIds };
+    }
+    await Promise.all(waitedTaskIds.map((id) => this.wait(id)));
     if (parentSignal?.aborted) throw new Error('Subagent run aborted');
-    return { mode, task_ids: ids, results: ids.map((id) => this.tasks.get(id)!) };
+    const results = ids.map((id) => this.tasks.get(id)!).filter(Boolean);
+    return {
+      mode: resolvedMode,
+      task_ids: ids,
+      waited_task_ids: waitedTaskIds,
+      background_task_ids: backgroundTaskIds,
+      members: results.map((task) => ({ task_id: task.id, agent: task.agent, effective_mode: task.effective_mode ?? task.mode, state: task.status })),
+      results,
+    };
   }
 
   async continueTask(
@@ -413,11 +594,17 @@ export class SubagentManager {
     if (!definition) throw new Error(`Subagent definition not found for continuation: ${latest.agent}`);
     try { this.history.upsertTask(cwd, { ...latest, attempt: latest.attempt ?? 1 }); } catch {}
     const effectiveProfile = resolveContinuationProfile(definition, config, ctx, input);
+    const effectiveMode = resolveContinuationEffectiveMode({ explicitMode: input.mode, previousTask: latest, config });
     const continuationPrompt = sanitizeInteractionTransportText(input.prompt);
+    const continuationSessionId = sessionIdFromContext(ctx);
+    this.liveStates.delete(latest.id);
     const task: SubagentTask = {
       ...latest,
+      mode: effectiveMode,
+      effective_mode: effectiveMode,
       status: 'queued',
       attempt: (latest.attempt ?? 1) + 1,
+      session_id: continuationSessionId,
       last_activity_at: nowIso(),
       last_activity: 'queued',
       started_at: undefined,
@@ -435,6 +622,8 @@ export class SubagentManager {
       error_metadata: undefined,
       result: undefined,
       interaction_request: undefined,
+      pending_message_count: 0,
+      undelivered_message_count: 0,
     };
     this.launchAttempt({
       definition,
@@ -444,7 +633,7 @@ export class SubagentManager {
       ctx,
       config,
       effectiveProfile,
-      parentSessionId: latest.session_id,
+      parentSessionId: continuationSessionId,
       nestedSessionPath: latest.nested_session_path,
       previousSnapshot: latest.thread_snapshot,
       continuationPrompt,
@@ -452,10 +641,10 @@ export class SubagentManager {
       onTaskUpdate: () => onTaskUpdate?.([this.tasks.get(task.id)!].filter(Boolean)),
       limiter: this.limiter(cwd, config.max_concurrency),
     });
-    if (task.mode === 'background') return { mode: task.mode, task_ids: [task.id] };
+    if (effectiveMode === 'background') return { mode: effectiveMode, task_ids: [task.id] };
     await this.wait(task.id);
     if (parentSignal?.aborted) throw new Error('Subagent continuation aborted');
-    return { mode: task.mode, task_ids: [task.id], results: [this.tasks.get(task.id)!] };
+    return { mode: effectiveMode, task_ids: [task.id], results: [this.tasks.get(task.id)!] };
   }
 
   cancel(id: string, reason = 'cancelled'): SubagentTask {
@@ -475,6 +664,9 @@ export class SubagentManager {
         partial_result_available: hasPartialResult(task),
       }));
       task.error = deriveErrorString(task.error_metadata);
+      delete task.live_activity;
+      task.pending_message_count = 0;
+      task.undelivered_message_count = task.undelivered_message_count ?? 0;
       if (cwd) this.record(cwd, task, task.last_activity, true);
       return task;
     }
@@ -488,6 +680,7 @@ export class SubagentManager {
 
   private transitionToStopping(task: SubagentTask, reason: string, cwd?: string): void {
     if (task.status === 'stopping' || isTerminalStatus(task.status)) return;
+    this.closeTaskLiveState(task);
     task.status = 'stopping';
     task.stop_reason = reason;
     task.last_activity = reason;
@@ -499,6 +692,7 @@ export class SubagentManager {
 
   private finalizeStop(task: SubagentTask, parentSessionId: string | undefined, cwd: string, onTaskUpdate?: () => void): void {
     const disposition = this.stopDispositions.get(task.id) ?? stopDispositionFromReason(task.stop_reason ?? 'cancelled');
+    this.closeTaskLiveState(task);
     task.status = disposition.status;
     task.last_activity_at = nowIso();
     task.ended_at = task.last_activity_at;
@@ -507,6 +701,7 @@ export class SubagentManager {
       partial_result_available: hasPartialResult(task),
     }));
     task.error = deriveErrorString(task.error_metadata);
+    delete task.live_activity;
     task.last_activity = disposition.status === 'failed' ? `failed: ${task.error}` : task.stop_reason ?? task.error;
     delete task.interaction_request;
     this.stopDispositions.delete(task.id);
@@ -518,7 +713,7 @@ export class SubagentManager {
     definition: SubagentDefinition,
     taskText: string,
     context: string | undefined,
-    mode: 'task' | 'background',
+    mode: 'task' | 'background' | undefined,
     ctx: any,
     config: SubagentsConfig,
     parentSignal?: AbortSignal,
@@ -527,10 +722,12 @@ export class SubagentManager {
   ): string {
     const session_id = sessionIdFromContext(ctx);
     const effectiveProfile = resolveEffectiveSubagentProfile({ agentName: definition.name, definition, config, ctx });
+    const effectiveMode = resolveEffectiveSubagentMode({ invocationMode: mode, definition, config });
     const task: SubagentTask = {
       id: taskId(definition.name),
       agent: definition.name,
-      mode,
+      mode: effectiveMode,
+      effective_mode: effectiveMode,
       status: 'queued',
       task: taskText,
       context,
@@ -538,6 +735,7 @@ export class SubagentManager {
       effort: effectiveProfile.effort.value,
       model_source: effectiveProfile.model.source,
       effort_source: effectiveProfile.effort.source,
+      pending_message_count: 0,
       created_at: nowIso(),
       attempt: 1,
       session_id,
@@ -556,6 +754,13 @@ export class SubagentManager {
     this.tasks.set(id, task);
     this.taskCwds.set(id, cwd);
     this.controllers.set(id, controller);
+    this.liveStates.set(id, {
+      attempt: task.attempt ?? 1,
+      parentSessionId,
+      bridgeReady: false,
+      pendingMessages: [],
+      pendingBytes: 0,
+    });
     const abortFromParent = () => this.cancel(id, 'parent abort');
     if (parentSignal?.aborted) abortFromParent();
     else parentSignal?.addEventListener('abort', abortFromParent, { once: true });
@@ -593,10 +798,14 @@ export class SubagentManager {
             effectiveProfile,
             nested_session_path: nestedSessionPath,
             continuation: continuationPrompt ? { prompt: continuationPrompt, attempt: task.attempt ?? 1, previous_snapshot: previousSnapshot } : undefined,
+            registerLiveBridge: (bridge) => this.registerLiveBridge(id, bridge, parentSessionId, task.attempt ?? 1),
+            clearLiveBridge: () => this.clearLiveBridge(id, task.attempt ?? 1),
+            onQueuedMessageStart: () => this.consumeQueuedMessage(id),
             onActivity: (activity) => {
               if (task.status === 'stopping' || isTerminalStatus(task.status)) return;
               task.last_activity_at = nowIso();
-              task.last_activity = activity.message;
+              if (activity.live_activity) task.live_activity = activity.live_activity;
+              task.last_activity = activity.live_activity?.current?.label ?? activity.message;
               if (activity.output) task.output_preview = compactOutput(activity.output);
               if (activity.prompt) {
                 if (continuationPrompt) task.continuation_prompt = sanitizeInteractionTransportText(activity.prompt);
@@ -699,8 +908,10 @@ export class SubagentManager {
         const finalResult = sanitizeInteractionTransportText(result.result ?? '');
         if (!finalResult.trim()) throw new Error('Subagent finished without a final response.');
         this.stopDispositions.delete(id);
+        this.closeTaskLiveState(task);
         task.status = 'completed';
         delete task.stop_reason;
+        delete task.live_activity;
         task.result = finalResult;
         task.output_preview = compactOutput(finalResult);
         task.transcript = sanitizeInteractionTransportText(`${task.transcript ?? ''}\n\n# response sent to orchestrator\n\n${finalResult}`.trim());
@@ -732,6 +943,7 @@ export class SubagentManager {
         if (isTerminalStatus(task.status)) return;
         this.stopDispositions.delete(id);
         task.status = 'failed';
+        delete task.live_activity;
         delete task.stop_reason;
         const metadata = timedOut
           ? normalizeErrorMetadata({
@@ -749,6 +961,7 @@ export class SubagentManager {
         task.error = timedOut || error instanceof SubagentStructuredError
           ? deriveErrorString(task.error_metadata)
           : error instanceof Error ? error.message : String(error);
+        this.closeTaskLiveState(task);
         task.last_activity = `failed: ${task.error}`;
         task.last_activity_at = nowIso();
         task.ended_at = task.last_activity_at;
@@ -760,6 +973,7 @@ export class SubagentManager {
         if (timeout) clearTimeout(timeout);
         await activeRunnerSettlement?.catch(() => undefined);
         if (acquired) limiter.release();
+        this.clearLiveBridge(id, task.attempt ?? 1);
         parentSignal?.removeEventListener('abort', abortFromParent);
         this.controllers.delete(id);
       }

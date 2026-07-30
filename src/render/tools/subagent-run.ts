@@ -1,20 +1,36 @@
-import { readSubagentsConfig } from '../config.js';
-import type { SubagentTask } from '../types.js';
-import { textComponent } from './components.js';
+import { loadSubagents, readSubagentsConfig, resolveEffectiveSubagentMode } from '../config.js';
+import type { SubagentMode, SubagentTask } from '../types.js';
+import { textComponent, wrappedTextComponent } from './components.js';
 import { collapsedResultHint, formatUsage, taskFinalText } from './formatting.js';
 import { progressText } from './progress.js';
 import { taskFromDetails } from '../result-details.js';
 
-export function renderSubagentTaskCall(agent: string, mode: 'task' | 'background', theme: any, detail?: string) {
-  const uiMode = readSubagentsConfig(process.cwd()).mode;
-  const detailsHint = uiMode === 'claude' ? '(/subagents for details)' : '(ctrl+, or /subagents for details)';
+export function renderSubagentTaskCall(agent: string, mode: 'task' | 'background' | 'mixed', theme: any, detail?: string) {
+  const historyShortcut = readSubagentsConfig(process.cwd()).history_panel_shortcut ?? 'ctrl+,';
+  const detailsHint = `(${historyShortcut} or /subagents for details)`;
   const title = `${theme.fg?.('toolTitle', theme.bold?.('subagent ') ?? 'subagent ') ?? 'subagent '}${theme.fg?.('accent', agent) ?? agent}${theme.fg?.('dim', ` (${mode})`) ?? ` (${mode})`} ${theme.fg?.('dim', detailsHint) ?? detailsHint}`;
   return textComponent(detail ? `${title}\n${theme.fg?.('dim', detail) ?? detail}` : title);
 }
 
+function resolveRenderedSubagentRunMode(args: any, cwd: string): SubagentMode | 'mixed' {
+  if (args.mode === 'task' || args.mode === 'background') return args.mode;
+  const config = readSubagentsConfig(cwd);
+  const definitions = new Map(loadSubagents(cwd).map((definition) => [definition.name, definition]));
+  const names = args.agents?.length ? args.agents : args.agent ? [args.agent] : [];
+  const modes = new Set(names.map((name: string) => resolveEffectiveSubagentMode({
+    invocationMode: args.mode,
+    definition: definitions.get(String(name).toLowerCase()),
+    config,
+  })));
+  if (modes.size > 1) return 'mixed';
+  const firstMode = modes.values().next().value as SubagentMode | undefined;
+  return firstMode ?? resolveEffectiveSubagentMode({ invocationMode: args.mode, config });
+}
+
 export function renderSubagentRunCall(args: any, theme: any) {
+  const cwd = process.cwd();
   const agents = args.agents?.length ? args.agents.join(', ') : args.agent ?? 'subagent';
-  return renderSubagentTaskCall(agents, args.mode ?? 'task', theme);
+  return renderSubagentTaskCall(agents, resolveRenderedSubagentRunMode(args, cwd), theme);
 }
 
 export function renderSubagentRunResult(result: any, { expanded, isPartial }: any, theme: any) {
@@ -25,12 +41,15 @@ export function renderSubagentRunResult(result: any, { expanded, isPartial }: an
       ? progressText([task], frame, { backgroundable: Boolean(result?.details?.backgroundable), backgroundShortcut: result?.details?.backgroundShortcut })
       : progressText([], frame, { backgroundable: Boolean(result?.details?.backgroundable), backgroundShortcut: result?.details?.backgroundShortcut });
     const lines = raw.split('\n');
-    const styled = lines.map((line: string, index: number) => (
-      index === 0
-        ? (theme.fg?.('warning', line) ?? line)
-        : (theme.fg?.('dim', line) ?? line)
-    )).filter(Boolean).join('\n');
-    return textComponent(styled);
+    const activityCount = task?.live_activity?.trail?.length ?? 0;
+    const activityStartIndex = 2;
+    const currentActivityIndex = activityCount ? activityStartIndex + activityCount - 1 : -1;
+    const styled = lines.map((line: string, index: number) => {
+      if (index === 0) return theme.fg?.('warning', line) ?? line;
+      if (index === currentActivityIndex) return theme.bold?.(theme.fg?.('accent', line) ?? line) ?? (theme.fg?.('accent', line) ?? line);
+      return theme.fg?.('dim', line) ?? line;
+    }).filter(Boolean).join('\n');
+    return wrappedTextComponent(styled);
   }
   const failed = result?.isError || task?.status === 'failed' || task?.status === 'cancelled';
   const status = failed ? (theme.fg?.('error', task?.status ?? 'failed') ?? (task?.status ?? 'failed')) : (theme.fg?.('success', task?.status ?? 'done') ?? (task?.status ?? 'done'));

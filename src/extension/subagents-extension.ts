@@ -32,11 +32,6 @@ export default function subagentsExtension(pi: any): void {
   const installClaudeBackgroundWidget = (ctx: any): boolean => {
     if (typeof ctx?.ui?.setWidget !== 'function') return false;
     const cwd = ctx?.cwd ?? process.cwd();
-    const config = readSubagentsConfig(cwd);
-    if (config.mode !== 'claude') {
-      ctx.ui.setWidget('subagents-claude-background', undefined);
-      return false;
-    }
     const sessionId = currentSessionId(ctx);
     widgetState = new ClaudeBackgroundWidgetState(
       () => manager.listSessionTasks(cwd, sessionId).slice(0, 100),
@@ -98,8 +93,6 @@ export default function subagentsExtension(pi: any): void {
   pi.registerShortcut?.(historyPanelShortcut, {
     description: 'Show subagent history panel',
     handler: async (ctx: any) => {
-      const cwd = ctx?.cwd ?? process.cwd();
-      if (readSubagentsConfig(cwd).mode === 'claude') return;
       await showSubagentsPanel({
         ctx,
         pi,
@@ -124,10 +117,8 @@ export default function subagentsExtension(pi: any): void {
 
   const backgroundHandoffShortcut = readSubagentsConfig(process.cwd()).background_handoff_shortcut ?? 'ctrl+h';
   pi.registerShortcut?.(backgroundHandoffShortcut, {
-    description: 'Send running claude subagent task to background',
-    handler: async (ctx: any) => {
-      const cwd = ctx?.cwd ?? process.cwd();
-      if (readSubagentsConfig(cwd).mode !== 'claude') return;
+    description: 'Send running subagent task to background',
+    handler: async () => {
       triggerClaudeBackgroundHandoff();
     },
   });

@@ -22,6 +22,7 @@ describe('subagent_list_agents tool', () => {
       'subagent_result',
       'subagent_list_tasks',
       'subagent_cancel',
+      'subagent_send_message',
     ]);
 
     const result = await registered.subagent_list_agents.execute('1', {}, undefined, undefined, { cwd: env.tmp });

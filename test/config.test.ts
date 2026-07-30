@@ -123,12 +123,46 @@ describe('config and workflow loading', () => {
     expect(config.stall_timeout_ms).toBe(10);
   });
 
+  it('loads default_mode through the global/project config cascade and falls back to task for invalid values', () => {
+    const agentDir = path.join(tmp, 'global-agent');
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(path.join(agentDir, 'subagents.json'), JSON.stringify({ default_mode: 'background' }));
+
+    withAgentDir(agentDir, () => {
+      expect(readSubagentsConfig(tmp).default_mode).toBe('background');
+
+      fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ default_mode: 'task' }));
+      expect(readSubagentsConfig(tmp).default_mode).toBe('task');
+
+      fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ default_mode: 'sidecar' }));
+      expect(readSubagentsConfig(tmp).default_mode).toBe('task');
+    });
+  });
+
+  it('rejects invalid subagent_mode values and defaults omitted definitions to task', () => {
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents', 'analyst.md'), `---\nname: analyst\ndescription: analyst agent\nsubagent_mode: background\ntools:\n  - read\n---\n# Agent`);
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents', 'reviewer.md'), `---\nname: reviewer\ndescription: reviewer agent\ntools:\n  - read\n---\n# Agent`);
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents', 'invalid.md'), `---\nname: invalid\ndescription: invalid agent\nsubagent_mode: sidecar\ntools:\n  - read\n---\n# Agent`);
+
+    const agents = loadSubagents(tmp);
+    const warnings = subagentSourceWarnings(tmp);
+
+    expect(agents.find((agent) => agent.name === 'analyst')).toMatchObject({ subagent_mode: 'background' });
+    expect(agents.find((agent) => agent.name === 'reviewer')).toMatchObject({ subagent_mode: undefined });
+    expect(agents.find((agent) => agent.name === 'invalid')).toBeUndefined();
+    expect(warnings).toContainEqual(expect.stringContaining('Subagent "invalid"'));
+    expect(warnings).toContainEqual(expect.stringContaining('subagent_mode'));
+    expect(warnings).toContainEqual(expect.stringContaining('task'));
+    expect(warnings).toContainEqual(expect.stringContaining('background'));
+  });
+
   it('falls back for invalid numeric config values', () => {
     fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ max_concurrency: 'bad', timeout_ms: 'bad', stall_timeout_ms: -1 }));
     const config = readSubagentsConfig(tmp);
     expect(config.max_concurrency).toBe(5);
     expect(config.timeout_ms).toBe(1200000);
     expect(config.stall_timeout_ms).toBe(240000);
+    expect(config.default_mode).toBe('task');
   });
 
   it('loads global subagents and lets project-local agents/config override them', () => {
@@ -282,18 +316,18 @@ describe('config and workflow loading', () => {
     expect(readSubagentsConfig(tmp).session_resources).toBe('lean');
   });
 
-  it('supports mode values with opencode fallback', () => {
+  it('ignores legacy ui mode config values', () => {
     fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ mode: 'claude' }));
-    expect(readSubagentsConfig(tmp).mode).toBe('claude');
+    expect(readSubagentsConfig(tmp)).not.toHaveProperty('mode');
 
     fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ mode: 'opencode' }));
-    expect(readSubagentsConfig(tmp).mode).toBe('opencode');
+    expect(readSubagentsConfig(tmp)).not.toHaveProperty('mode');
 
     fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ mode: 'invalid' }));
-    expect(readSubagentsConfig(tmp).mode).toBe('opencode');
+    expect(readSubagentsConfig(tmp)).not.toHaveProperty('mode');
   });
 
-  it('supports configurable claude background handoff shortcuts with ctrl+h fallback', () => {
+  it('supports configurable background handoff shortcuts with ctrl+h fallback', () => {
     expect(readSubagentsConfig(tmp).background_handoff_shortcut).toBe('ctrl+h');
 
     fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ background_handoff_shortcut: 'ctrl+b' }));
@@ -306,7 +340,7 @@ describe('config and workflow loading', () => {
     expect(readSubagentsConfig(tmp).background_handoff_shortcut).toBe('ctrl+h');
   });
 
-  it('supports configurable opencode history and detail cancel shortcuts', () => {
+  it('supports configurable history and detail cancel shortcuts', () => {
     expect(readSubagentsConfig(tmp).history_panel_shortcut).toBe('ctrl+,');
     expect(readSubagentsConfig(tmp).detail_cancel_shortcut).toBe('x');
 

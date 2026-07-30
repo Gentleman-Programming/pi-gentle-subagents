@@ -233,6 +233,42 @@ describe('subagents panel and extension ui', () => {
     expect(rendered).not.toContain('legacy result should not win');
   });
 
+  it('reloads completed steering projections from persisted snapshots in chronological order without leaking them into task summary fields', () => {
+    const steeringText = 'read package.json';
+    const task: SubagentTask = {
+      id: 'subtask_thread_steering_reload',
+      agent: 'analyst',
+      mode: 'task',
+      status: 'completed',
+      task: 'summarize dependencies',
+      created_at: new Date().toISOString(),
+      last_activity: 'completed',
+      output_preview: 'dependency summary ready',
+      result: 'dependency summary ready',
+      thread_snapshot: {
+        version: 1,
+        source: 'mixed',
+        items: [
+          { type: 'attempt', attempt: 1 },
+          { type: 'user', label: 'delegated_task', text: 'summarize dependencies' },
+          { type: 'user', id: 'steering-1', label: 'user', text: steeringText },
+          { type: 'assistant', message: { role: 'assistant', content: [{ type: 'toolCall', id: 'read-1', name: 'read', arguments: { path: 'package.json' } }] } },
+          { type: 'tool', tool_call_id: 'read-1', name: 'read', status: 'completed', arguments: { path: 'package.json' }, result: { content: [{ type: 'text', text: 'package body' }], isError: false } },
+          { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'dependency summary ready' }] } },
+        ],
+      },
+    } as any;
+    const panel = new SubagentsHistoryPanel([task], { fg: (_name: string, text: string) => text }, () => undefined, () => false, (text) => text.length, (text, width) => text.length > width ? text.slice(0, width) : text);
+    const rendered = panel.render(160).join('\n');
+
+    expect(rendered).toContain(steeringText);
+    expect(rendered.indexOf(steeringText)).toBeLessThan(rendered.indexOf('read completed'));
+    expect(rendered.indexOf('read completed')).toBeLessThan(rendered.indexOf('dependency summary ready'));
+    expect(task.output_preview).toBe('dependency summary ready');
+    expect(task.output_preview).not.toContain(steeringText);
+    expect(rendered).not.toContain('task: summarize dependencies read package.json');
+  });
+
   it('renders failed and cancelled terminal errors even when a valid thread snapshot exists', () => {
     const failedTask: SubagentTask = {
       id: 'subtask_thread_failed',
@@ -973,8 +1009,8 @@ describe('subagents panel and extension ui', () => {
     expect(notifications[0][1]).toBe('warning');
   });
 
-  it('registers the configured opencode history panel and detail cancel shortcuts at extension startup', () => {
-    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ mode: 'opencode', history_panel_shortcut: 'ctrl+p', detail_cancel_shortcut: 'ctrl+shift+q' }));
+  it('registers the configured history, detail cancel, and background handoff shortcuts at extension startup', () => {
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ history_panel_shortcut: 'ctrl+p', detail_cancel_shortcut: 'ctrl+shift+q' }));
     const previousCwd = process.cwd();
     process.chdir(tmp);
     try {
@@ -1083,7 +1119,7 @@ describe('subagents panel and extension ui', () => {
     expect(cancelled).toEqual(['task-1']);
   });
 
-  it('registers the configured claude background handoff shortcut at extension startup', () => {
+  it('registers the configured background handoff shortcut at extension startup', () => {
     fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ background_handoff_shortcut: 'ctrl+b' }));
     const previousCwd = process.cwd();
     process.chdir(tmp);
@@ -1100,8 +1136,7 @@ describe('subagents panel and extension ui', () => {
     }
   });
 
-  it('registers terminal input routing in claude mode and cleans it up on shutdown', async () => {
-    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ mode: 'claude' }));
+  it('registers terminal input routing and cleans it up on shutdown', async () => {
     const handlers: Record<string, any> = {};
     const off = vi.fn();
     const setWidget = vi.fn();
@@ -1127,22 +1162,21 @@ describe('subagents panel and extension ui', () => {
     expect(off).toHaveBeenCalledTimes(1);
   });
 
-  it('disables ctrl+, in claude mode while keeping the command available', async () => {
-    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ mode: 'claude' }));
-    let shortcutHandler: any;
+  it('keeps the history shortcut and command available together', async () => {
+    let historyShortcutHandler: any;
     let subagentsCommand: any;
     const custom = vi.fn();
     extension({
       registerTool: () => undefined,
       registerCommand: (name: string, command: any) => { if (name === 'subagents') subagentsCommand = command; },
-      registerShortcut: (_key: string, shortcut: any) => { shortcutHandler = shortcut.handler; },
+      registerShortcut: (key: string, shortcut: any) => { if (key === 'ctrl+,') historyShortcutHandler = shortcut.handler; },
     });
 
-    await shortcutHandler({ cwd: tmp, ui: { custom } });
-    expect(custom).not.toHaveBeenCalled();
+    await historyShortcutHandler({ cwd: tmp, ui: { custom } });
+    expect(custom).toHaveBeenCalledTimes(1);
 
     await subagentsCommand.handler('', { cwd: tmp, ui: { custom } });
-    expect(custom).toHaveBeenCalledTimes(1);
+    expect(custom).toHaveBeenCalledTimes(2);
   });
 
   it('opens the subagents history panel as a full-screen overlay with bounded height', async () => {

@@ -13,6 +13,18 @@ function shortJson(value: unknown, limit = 900): string {
 }
 
 const SNAPSHOT_TEXT_LIMIT = 4000;
+const INITIAL_USER_LABELS = new Set(['delegated_task', 'continuation', 'context', 'prompt']);
+
+type SnapshotUpdateResult = {
+  snapshotChanged: boolean;
+  activityMessage?: 'live steering queue updated' | 'live steering message consumed';
+};
+
+type SteeringProjectionRecord = {
+  id: string;
+  text: string;
+  state: 'queued' | 'consumed';
+};
 
 function debugLog(cwd: string | undefined, scope: string, data: unknown): void {
   writeSubagentsDebugLog(cwd, scope, data);
@@ -39,6 +51,40 @@ function resultTextFromContent(content: unknown): string | undefined {
     .filter(Boolean)
     .join('\n');
   return text || undefined;
+}
+
+function textFromUnknown(value: unknown): string | undefined {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return resultTextFromContent(value);
+  if (!value || typeof value !== 'object') return undefined;
+  const record = value as Record<string, unknown>;
+  return typeof record.text === 'string'
+    ? record.text
+    : typeof record.message === 'string'
+      ? record.message
+      : resultTextFromContent(record.content);
+}
+
+function steeringQueueTexts(event: any): string[] {
+  const steering = Array.isArray(event?.steering)
+    ? event.steering
+    : Array.isArray(event?.queue_update?.steering)
+      ? event.queue_update.steering
+      : Array.isArray(event?.queueUpdate?.steering)
+        ? event.queueUpdate.steering
+        : [];
+  return steering
+    .map((entry: unknown) => truncateSnapshotText(textFromUnknown(entry)))
+    .filter((text: string | undefined): text is string => Boolean(text?.trim()));
+}
+
+function userMessageStartText(event: any): string | undefined {
+  if (event?.type !== 'message_start' || event?.message?.role !== 'user') return undefined;
+  return truncateSnapshotText(textFromUnknown(event.message?.content) ?? textFromUnknown(event.message?.text) ?? textFromUnknown(event.message));
+}
+
+function isInitialUserItem(item: SubagentThreadItem): item is Extract<SubagentThreadItem, { type: 'user' }> {
+  return item.type === 'user' && INITIAL_USER_LABELS.has(item.label ?? 'user');
 }
 
 function boundUnknown(value: unknown, limit = SNAPSHOT_TEXT_LIMIT): unknown {
@@ -86,6 +132,8 @@ export class ThreadSnapshotBuilder {
   private readonly toolIndex = new Map<string, number>();
   private readonly currentAttemptStart: number;
   private streamingAssistantSequence = 0;
+  private steeringSequence = 0;
+  private readonly steeringRecords: SteeringProjectionRecord[] = [];
 
   constructor(
     prompt?: string,
@@ -104,7 +152,7 @@ export class ThreadSnapshotBuilder {
     if (prompt?.trim()) this.items.push({ type: 'user', id: promptLabel === 'continuation' ? `continuation-prompt-${attempt}` : 'delegated-prompt', label: promptLabel, text: truncateSnapshotText(prompt) ?? '' });
   }
 
-  update(event: any): void {
+  update(event: any): SnapshotUpdateResult {
     const now = new Date().toISOString();
     const messageEvent = event?.assistantMessageEvent;
     const textDelta = event?.type === 'message_update' && messageEvent?.type === 'text_delta' && typeof messageEvent.delta === 'string'
@@ -115,7 +163,17 @@ export class ThreadSnapshotBuilder {
       : undefined;
     if (textDelta !== undefined || thinkingDelta !== undefined) {
       this.appendAssistantDelta(textDelta, thinkingDelta);
-      return;
+      return { snapshotChanged: true };
+    }
+    if (event?.type === 'queue_update') {
+      return this.projectQueuedSteering(event)
+        ? { snapshotChanged: true, activityMessage: 'live steering queue updated' }
+        : { snapshotChanged: false };
+    }
+    if (event?.type === 'message_start' && event?.message?.role === 'user') {
+      return this.consumeQueuedSteering(event)
+        ? { snapshotChanged: true, activityMessage: 'live steering message consumed' }
+        : { snapshotChanged: false };
     }
     if (event?.type === 'auto_retry_start' || event?.type === 'auto_retry_end' || event?.type === 'agent_settled') {
       const text = event.type === 'auto_retry_start'
@@ -124,7 +182,7 @@ export class ThreadSnapshotBuilder {
           ? 'auto retry end'
           : 'agent settled';
       this.items.push({ type: 'status', text, severity: event.type === 'agent_settled' ? 'success' : 'info' });
-      return;
+      return { snapshotChanged: true };
     }
     if (event?.type === 'tool_execution_start') {
       const name = event.toolName ?? event.name ?? 'tool';
@@ -141,17 +199,17 @@ export class ThreadSnapshotBuilder {
       };
       this.toolIndex.set(tool_call_id ?? `item-${this.items.length}`, this.items.length);
       this.items.push(item);
-      return;
+      return { snapshotChanged: true };
     }
     if (event?.type === 'tool_execution_update') {
       const id = eventToolCallId(event);
       const index = id ? this.toolIndex.get(id) : undefined;
-      if (index === undefined) return;
+      if (index === undefined) return { snapshotChanged: false };
       const item: any = this.items[index];
       const payload = resultPayload(event.partialResult, false);
       if (item.type === 'tool') item.result = payload;
       if (item.type === 'tool') item.status = 'partial';
-      return;
+      return { snapshotChanged: true };
     }
     if (event?.type === 'tool_execution_end') {
       const id = eventToolCallId(event);
@@ -160,7 +218,7 @@ export class ThreadSnapshotBuilder {
       const payload = resultPayload(event.result ?? event.output ?? event.error, Boolean(event.isError));
       if (index === undefined) {
         this.items.push({ type: 'tool_result', id, tool_call_id: id, name, result: payload });
-        return;
+        return { snapshotChanged: true };
       }
       const item: any = this.items[index];
       if (item.type === 'tool') {
@@ -168,7 +226,9 @@ export class ThreadSnapshotBuilder {
         item.result = payload;
         item.ended_at = now;
       }
+      return { snapshotChanged: true };
     }
+    return { snapshotChanged: false };
   }
 
   snapshot(source: SubagentThreadSnapshot['source'] = 'events'): SubagentThreadSnapshot | undefined {
@@ -179,16 +239,52 @@ export class ThreadSnapshotBuilder {
     const messageItems = assistantItemsFromMessages(messages);
     const priorItems = this.items.slice(0, this.currentAttemptStart);
     const currentItems = this.items.slice(this.currentAttemptStart);
-    const initialItems: SubagentThreadItem[] = currentItems.filter((item) => item.type === 'attempt' || item.type === 'user');
+    const initialItems: SubagentThreadItem[] = currentItems.filter((item) => item.type === 'attempt' || isInitialUserItem(item));
     const finalMessagesAlreadyHaveThinking = messageItems.some((item) => item.type === 'assistant' && item.message.content.some((part) => part.type === 'thinking'));
     const eventItems = currentItems
-      .filter((item) => item.type !== 'attempt' && item.type !== 'user')
+      .filter((item) => item.type !== 'attempt' && !isInitialUserItem(item))
       .map((item) => this.finalizeEventItem(item, messageItems.length > 0, finalMessagesAlreadyHaveThinking))
       .filter((item): item is SubagentThreadItem => Boolean(item));
     const currentAttemptItems = [...initialItems, ...(messageItems.length ? interleaveMessagesWithToolRows(messageItems, eventItems) : eventItems)];
     const items: SubagentThreadItem[] = [...priorItems, ...currentAttemptItems];
     const source = messageItems.length && eventItems.length ? 'mixed' : messageItems.length ? 'session_messages' : 'events';
     return boundThreadSnapshot({ version: 1, created_at: this.createdAt, updated_at: new Date().toISOString(), source, items }, { textLimit: SNAPSHOT_TEXT_LIMIT });
+  }
+
+  private projectQueuedSteering(event: any): boolean {
+    const pendingByText = new Map<string, SteeringProjectionRecord[]>();
+    for (const record of this.steeringRecords) {
+      if (record.state !== 'queued') continue;
+      const entries = pendingByText.get(record.text) ?? [];
+      entries.push(record);
+      pendingByText.set(record.text, entries);
+    }
+
+    let changed = false;
+    for (const text of steeringQueueTexts(event)) {
+      const pending = pendingByText.get(text);
+      if (pending?.length) {
+        pending.shift();
+        continue;
+      }
+      changed = true;
+      const record: SteeringProjectionRecord = { id: `steering-${++this.steeringSequence}`, text, state: 'queued' };
+      this.steeringRecords.push(record);
+      this.items.push({ type: 'user', id: record.id, label: 'queued', text: record.text });
+    }
+    return changed;
+  }
+
+  private consumeQueuedSteering(event: any): boolean {
+    const text = userMessageStartText(event);
+    if (!text) return false;
+    const record = this.steeringRecords.find((entry) => entry.state === 'queued' && entry.text === text);
+    if (!record) return false;
+    record.state = 'consumed';
+    const index = this.items.findIndex((item) => item.type === 'user' && item.id === record.id);
+    if (index >= 0) this.items.splice(index, 1);
+    this.items.push({ type: 'user', id: record.id, label: 'user', text: record.text });
+    return true;
   }
 
   private dropTrailingRawToolJson(toolName?: string, toolCallId?: string): void {

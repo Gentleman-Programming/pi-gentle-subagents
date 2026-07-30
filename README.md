@@ -6,13 +6,16 @@ Pi extension for delegating work to markdown-defined subagents. It registers too
 
 - Markdown-defined subagents loaded from global and project directories.
 - `subagent_run` for task-mode or background delegation to one or many agents.
+- `subagent_continue` for resuming the exact persisted nested session with optional mode/model/effort overrides.
+- `subagent_send_message` for live same-parent steering of owned background tasks on supported Pi runtimes.
 - Status/result/list/cancel tools for delegated tasks.
 - Isolated in-memory agent sessions for each subagent run.
 - Subagent markdown used as system prompt, with delegated task/context as the user prompt.
 - Project-scoped task history in a global SQLite data/cache location.
-- TUI history panel via `/subagents` or `ctrl+,`.
-- Claude-mode background handoff via `ctrl+h` by default, configurable in `subagents.json`.
-- TUI execution rendering can expand/collapse tool and rendered component output with `ctrl+o`, and show/hide assistant thinking blocks with `ctrl+t`.
+- TUI history panel via `/subagents` or `ctrl+,` by default.
+- Task-to-background handoff via `ctrl+h` by default, configurable in `subagents.json`.
+- Automatic background completion/failure notifications that start or queue a parent-orchestrator response; no polling is needed just to wait.
+- TUI execution rendering can expand/collapse tool and rendered component output with `ctrl+o`, show/hide assistant thinking blocks with `ctrl+t`, and display queued/consumed steering messages in the owning task detail timeline.
 - Model profile UI via `/subagent-models`.
 - Per-agent/default model and thinking-effort configuration.
 - Tool allowlist filtering that prevents subagents from delegating to other subagents.
@@ -60,6 +63,8 @@ The package manifest exposes:
 The npm metadata includes the `pi-package` keyword required for Pi package gallery discovery. After publishing the npm package, it is eligible to appear on the Pi package page.
 
 Use `/reload` after changing extension code, skill files, config, or markdown subagent definitions during an interactive session.
+
+Package installation scope and configuration scope are independent. A globally installed extension can still use project-local `.pi/subagents.json` and `.pi/subagents/*.md`; a project-local package installation does not require every subagent setting to be project-local.
 
 ## Subagent definitions
 
@@ -119,6 +124,7 @@ Supported frontmatter:
 | `tools` | Tool allowlist for the subagent. Accepts either a comma-separated inline list or a multiline YAML list, but never both in one definition. When omitted, the definition gets the built-in default tool list. Configured `default_tools` is used by the runner when a definition has an empty tool list. |
 | `model` | Optional model as `provider/model-id`. |
 | `effort`, `thinking_level`, `thinkingLevel` | Optional thinking effort: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. |
+| `subagent_mode` | Optional default execution mode for this definition: `task` or `background`. |
 
 ### Tool allowlist formats
 
@@ -155,24 +161,56 @@ The markdown body becomes the subagent instructions.
 
 ## Project and global config
 
-Config files:
+Choose the narrowest scope that matches the intended behavior:
+
+| Scope | Path | Use it when |
+|---|---|---|
+| Global defaults | `$PI_CODING_AGENT_DIR/subagents.json`, or `~/.pi/agent/subagents.json` when the environment variable is unset | The setting should apply across projects unless locally overridden. |
+| Project-local overrides | `.pi/subagents.json` | This workspace needs different defaults, shortcuts, tools, or profiles. |
+| One definition | Frontmatter in the selected global/project Markdown definition | Only that subagent needs `subagent_mode`, or an explicit per-file model/effort override. |
+
+Config resolves as a field-by-field cascade:
+
+1. Project `.pi/subagents.json` values win when present.
+2. Missing project fields inherit from global `$PI_CODING_AGENT_DIR/subagents.json` or `~/.pi/agent/subagents.json`.
+3. Fields missing from both use built-in defaults.
+
+Avoid copying every global value into project config: add only intentional local overrides unless you specifically want to pin inherited values. Changing where the package is installed does not change this cascade.
+
+`model_profiles` follow the selected definition source rather than being merged freely across scopes: project-local definitions use project-local profiles, while global definitions use global profiles. If a project definition overrides a global definition with the same normalized name, the project definition and its project-local profile win.
+
+### Asking an agent to configure Subagents
+
+You can ask the bundled `subagents-configuration` skill for setup or explanation. If your request does not already name a scope, the agent should explain the cascade and ask whether you want:
+
+1. a global default for every project;
+2. a project-local override for the current workspace; or
+3. a change to one subagent definition only.
+
+The agent should also ask for unresolved behavior choices—such as whether omitted runs default to `task` or `background`—before editing. A question about how configuration works is not authorization to change files, and the agent should not edit both global and project config unless you explicitly request both.
+
+Example requests:
 
 ```txt
-~/.pi/agent/subagents.json      # global
-.pi/subagents.json              # project
+Explain whether default_mode belongs in global or project config. Do not edit anything.
+Set default_mode to background only for this project.
+Configure the global reviewer profile, but leave project overrides unchanged.
+Give the project-local discovery definition background mode without changing other agents.
 ```
 
-Config resolves as a cascade: project `.pi/subagents.json` overrides global `~/.pi/agent/subagents.json`; missing project fields fall back to global config; fields missing from both fall back to built-in defaults. `model_profiles` are scoped to the definition source: project-local definitions use `.pi/subagents.json`, while global definitions use the global `subagents.json`. If a project definition overrides a global definition with the same name, the project definition and its project-local profile win.
+### Config example
 
-Example:
+The same JSON shape is valid globally or project-locally; place it only in the scope you intend:
 
 ```json
 {
   "default_model": "anthropic/claude-sonnet-4-5",
   "default_effort": "medium",
+  "default_mode": "task",
   "timeout_ms": 1200000,
   "stall_timeout_ms": 240000,
   "max_concurrency": 5,
+  "debug": false,
   "session_resources": "lean",
   "history_panel_shortcut": "ctrl+,",
   "detail_cancel_shortcut": "x",
@@ -203,14 +241,16 @@ Example:
 |---|---:|---|
 | `default_model` | current orchestrator model | Fallback model for all subagents. Format: `provider/model-id`. |
 | `default_effort` | current orchestrator effort | Fallback thinking effort. Also accepts `default_thinking_level` or `thinkingLevel`. |
+| `default_mode` | `task` | Fallback execution mode when neither the invocation nor the selected definition sets one. Accepts `task` or `background`. |
 | `model_profiles` | `{}` | Per-agent model/effort overrides scoped to matching definitions. Project-local profiles apply to project-local definitions; global profiles apply to global definitions. |
 | `timeout_ms` | `1200000` | Total timeout per subagent task (20 minutes). |
 | `stall_timeout_ms` | `240000` | Inactivity timeout for a subagent session (4 minutes). |
 | `max_concurrency` | `5` | Max concurrent subagent tasks per cwd/config pair. |
+| `debug` | `false` | Enable bounded runtime/interaction diagnostics in the executing project's `.pi/subagents-debug.log`. Use temporarily and disable after diagnosis. |
 | `session_resources` | `lean` | SDK resource loading mode. `lean` uses the subagent markdown body as the nested session system prompt, skips skills, prompt templates, themes, and context files, and loads extensions in tools-only/safety-hook mode so allowlisted extension tools remain available without startup context injection. Use explicit `full` only when a subagent intentionally needs the full Pi resource set. Also accepts camelCase `sessionResources`. |
-| `history_panel_shortcut` | `ctrl+,` | OpenCode-mode shortcut used to open the subagents history/detail panel. Accepts `ctrl+<letter>` or `ctrl+,` and also accepts camelCase `historyPanelShortcut`. |
+| `history_panel_shortcut` | `ctrl+,` | Shortcut used to open the subagents history/detail panel. Accepts `ctrl+<letter>` or `ctrl+,` and also accepts camelCase `historyPanelShortcut`. |
 | `detail_cancel_shortcut` | `x` | Shortcut for the subagents history/detail panel to cancel only the currently selected queued/running subagent. `ctrl+...` values are also registered as a Pi shortcut scoped by the active panel, so they still work when the TUI captures control keys; single-letter values are handled by the panel input. Accepts `ctrl+<letter>`, `ctrl+shift+<letter>`, `ctrl+,`, or one lowercase letter, and also accepts camelCase `detailCancelShortcut`. It is ignored when the panel is not active or the selected subagent is already finished. |
-| `background_handoff_shortcut` | `ctrl+h` | Claude-mode shortcut used to send a running task to the background. Accepts `ctrl+<letter>` and also accepts camelCase `backgroundHandoffShortcut`. |
+| `background_handoff_shortcut` | `ctrl+h` | Shortcut used to send a running task-mode subagent to the background. Accepts `ctrl+<letter>` and also accepts camelCase `backgroundHandoffShortcut`. |
 | `default_tools` | see below | Fallback tool allowlist used by the runner when an agent definition has an empty tool list. Omitted frontmatter `tools` uses the built-in default list. |
 
 Default tools:
@@ -218,6 +258,8 @@ Default tools:
 ```json
 ["read", "memory_context", "memory_search", "memory_recall", "memory_get"]
 ```
+
+The former UI selector `mode: "opencode" | "claude"` is no longer a supported config field. Do not add it. History/background visibility and task-to-background handoff are available together and are configured independently through their shortcut fields.
 
 Subagent delegation tools are always blocked from subagent tool allowlists, even if listed:
 
@@ -284,7 +326,9 @@ Useful event names:
 |---|---|
 | `subagent_list_agents` | List loaded markdown-defined subagents. |
 | `subagent_run` | Delegate a task to one or more subagents. Supports `task` and `background` mode. |
+| `subagent_continue` | Resume a completed, failed, or cancelled task in the same persisted nested Pi session, with an optional continuation-mode override. |
 | `subagent_status` | Get status for a delegated task. |
+| `subagent_send_message` | Queue a live message for an owned running background task. |
 | `subagent_result` | Read the result for a delegated task. |
 | `subagent_list_tasks` | List active and persisted delegated tasks for the current cwd. |
 | `subagent_cancel` | Cancel a running delegated task. |
@@ -307,20 +351,117 @@ Parameters:
 
 Behavior:
 
+- Invocation mode stays optional. Effective resolution is `input.mode ?? definition.subagent_mode ?? config.default_mode`, where `default_mode` falls back to `"task"`.
 - `mode: "task"` waits for completion and returns compact task summaries.
-- `mode: "background"` returns task IDs immediately; use status/result tools later.
+- `mode: "background"` returns task IDs immediately. Keep using the parent chat and wait for the automatic completion/failure turn; use status/result tools only when you explicitly need an intermediate status or stored result, not to poll just for completion.
+- When `mode` is omitted, a mixed batch can return `mode: "mixed"` plus `waited_task_ids`, `background_task_ids`, and per-member `effective_mode` rows.
 - Multiple agents can run from one request with `agents`.
 - Double Escape during task-mode execution cancels running subagents and aborts the main turn.
 
-## Commands and shortcut
+Examples:
+
+```ts
+// Omitted mode: each definition uses its own default.
+{ agents: ["analyst", "reviewer"], task: "review the plan" }
+
+// Explicit override: force every selected member into background mode.
+{ agents: ["analyst", "reviewer"], task: "review the plan", mode: "background" }
+
+// Mixed omitted-mode result shape.
+{
+  mode: "mixed",
+  waited_task_ids: ["subtask_analyst_..."],
+  background_task_ids: ["subtask_reviewer_..."],
+  members: [
+    { agent: "analyst", effective_mode: "task" },
+    { agent: "reviewer", effective_mode: "background" }
+  ]
+}
+```
+
+### `subagent_continue`
+
+Parameters:
+
+```ts
+{
+  task_id: string;
+  prompt: string;
+  mode?: "task" | "background";
+  model?: string;
+  effort?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+}
+```
+
+Behavior:
+
+- Continuations keep the same `task_id` and exact persisted nested Pi session.
+- Effective continuation mode resolves once as `input.mode ?? previous_task.effective_mode ?? previous_task.mode ?? config.default_mode ?? "task"`.
+- `mode: "task"` waits, renders `(task)`, and remains eligible for manual `ctrl+h` handoff.
+- `mode: "background"` returns immediately, renders `(background)`, and relies on the automatic completion notification.
+- When `mode` is omitted, the continuation preserves the previous task attempt's effective mode. Legacy records without a valid saved mode fall back through `default_mode` and then `task`.
+- Model and effort overrides still require an explicit user decision before use.
+
+### `subagent_send_message`
+
+Use `subagent_send_message` only for a running background task owned by the exact originating parent session. Successful enqueue is not delivery.
+
+```ts
+{ task_id: "subtask_reviewer_...", message: "Please include the missing constraint." }
+```
+
+Successful response:
+
+```json
+{
+  "status": "queued",
+  "task_id": "subtask_reviewer_...",
+  "pending_message_count": 1,
+  "message": "Message accepted into the steering queue; this does not prove model consumption."
+}
+```
+
+Rejected ownership/runtime examples:
+
+```json
+{
+  "status": "rejected",
+  "reason": "not_owner",
+  "message": "Only the exact originating parent Pi session may message this live background task."
+}
+```
+
+```json
+{
+  "status": "rejected",
+  "reason": "unsupported_runtime",
+  "required_pi_version": ">=0.82.1",
+  "detected_pi_version": "0.81.0",
+  "message": "Live background messaging requires Pi runtime >=0.82.1; detected 0.81.0."
+}
+```
+
+Live-message requirements, visibility, and lifecycle:
+
+- Live steering requires Pi runtime `>=0.82.1` and an available nested SDK `session.steer(...)` bridge. Compatibility is detected from the Pi SDK version already loaded by the runner; known old or unknown runtimes fail closed.
+- Ownership is exact: only the parent Pi session that launched the currently running background attempt can send to it. Continuations rebind ownership to the parent session that starts that attempt.
+- A same-parent message may be accepted before the nested steering bridge is ready. It remains in a bounded pending queue and is forwarded exactly once when readiness is established.
+- `status: "queued"` proves queue acceptance, not model consumption. The owning `/subagents` task detail timeline renders each message chronologically as queued and then consumed when the SDK confirms consumption, including FIFO handling of identical message text.
+- Active `subagent_status` surfaces `pending_message_count`. Terminal `subagent_result` and completion notifications surface `undelivered_message_count`, including `0`.
+- Pending queue entries are discarded on completion, cancellation, shutdown, restart, or continuation; they are not replayed into a new attempt.
+- Message text is private to the owning task detail timeline and persisted task-detail snapshot. Lists, widgets, completion notifications, result summaries, logs, and unrelated parent sessions expose only safe counts/metadata.
+- Live task-mode rendering shows the latest three safe activity labels; live background rendering shows one current activity only.
+
+## Commands and shortcuts
 
 | Entry point | Description |
 |---|---|
 | `/subagents` | Open the session-focused TUI subagent history panel. |
 | `/subagent-models` | Configure subagent and SDD phase model profiles in the matching local or global config. |
-| `ctrl+,` | Open the TUI subagent history panel in OpenCode mode by default. Configurable via `history_panel_shortcut` in `subagents.json`. |
+| `ctrl+,` | Open the TUI subagent history panel by default. Configurable via `history_panel_shortcut` in `subagents.json`. |
 | `x` | Cancel the currently selected queued/running subagent from the open history/detail panel by default. Configurable via `detail_cancel_shortcut` in `subagents.json`. |
-| `ctrl+h` | Send the running Claude-mode subagent task to the background by default. Configurable via `background_handoff_shortcut` in `subagents.json`. |
+| `ctrl+h` | Send the running task-mode subagent task to the background by default. Configurable via `background_handoff_shortcut` in `subagents.json`. |
+| `ctrl+o` | Expand or collapse rendered tool output and subagent responses in the active execution/detail view. |
 | `ctrl+t` | Show or hide assistant thinking blocks in the open subagent execution panel, using Pi's `app.thinking.toggle` keybinding. |
 
 `/subagent-models` writes profile changes to the config that matches each selected definition: project-local subagents write to `.pi/subagents.json`, while global subagents and synthetic SDD phase rows write to `~/.pi/agent/subagents.json` or `$PI_CODING_AGENT_DIR/subagents.json` when `PI_CODING_AGENT_DIR` is set.
@@ -420,7 +561,7 @@ Context7 access is limited to `discovery`, `tool-smoke`, and `sdd-explore`; down
 This package bundles:
 
 - `index.ts` and `src/**` — the Pi extension runtime.
-- `skills/subagents-configuration/SKILL.md` — configuration guidance for agents that need to create or edit subagent definitions.
+- `skills/subagents-configuration/SKILL.md` — configuration guidance for agents that need to explain, create, or edit subagent definitions and global/project settings. It requires explicit scope selection and unresolved behavior decisions before edits.
 
 Subagent definitions are intentionally user/project configuration, not hard-coded package behavior. Add them globally in `$PI_CODING_AGENT_DIR/agents/*.md` or `$PI_CODING_AGENT_DIR/subagents/*.md`, or project-locally in `.pi/agents/*.md` or `.pi/subagents/*.md`. Do not inspect `node_modules/pi-subagents-j0k3r/agents` for definitions; that path is not part of the package design and may not exist.
 

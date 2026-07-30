@@ -45,7 +45,36 @@ describe('completion message render', () => {
     expect(expanded).toContain('background final response to=functions.memory_get');
   });
 
-  it('delivers background completion messages without triggering or waiting for a follow-up turn', () => {
+  it('adds one themed row of vertical padding above and below the completion content', () => {
+    let renderer: any;
+    extension({
+      registerTool: () => undefined,
+      registerCommand: () => undefined,
+      registerShortcut: () => undefined,
+      registerMessageRenderer: (customType: string, value: any) => { if (customType === 'subagent-completion') renderer = value; },
+    });
+    const message = {
+      customType: 'subagent-completion',
+      content: 'compact visible content',
+      details: {
+        full_result: 'done',
+        task: { id: 'subtask_spaced', agent: 'discovery', status: 'completed' },
+      },
+    };
+
+    const lines = renderer(message, { expanded: false }, {
+      fg: (_name: string, text: string) => text,
+      bg: (_name: string, text: string) => text,
+    }).render(80);
+
+    expect(lines).toHaveLength(4);
+    expect(lines[0]).toBe(' '.repeat(80));
+    expect(lines[1]).toContain('[subagent] discovery completed');
+    expect(lines[2]).toContain('response: collapsed');
+    expect(lines[3]).toBe(' '.repeat(80));
+  });
+
+  it('delivers background completion messages as follow-up turns that automatically trigger the orchestrator exactly once', () => {
     const sendMessage = vi.fn();
     sendSubagentCompletionMessage({ sendMessage }, {
       id: 'subtask_notify_1',
@@ -58,7 +87,7 @@ describe('completion message render', () => {
     });
 
     expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(sendMessage.mock.calls[0][1]).toEqual({ triggerTurn: false, deliverAs: 'steer' });
+    expect(sendMessage.mock.calls[0][1]).toEqual({ triggerTurn: true, deliverAs: 'followUp' });
   });
 
   it('renders background completion messages with a distinct themed block background', () => {

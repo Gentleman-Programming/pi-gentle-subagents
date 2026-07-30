@@ -6,6 +6,7 @@ export function completionMessage(task: any): string {
   const result = task.result ?? task.error ?? task.output_preview ?? '(no result captured)';
   const content = [
     `Subagent ${task.agent} ${task.status}: ${task.id}`,
+    `Undelivered messages: ${task.undelivered_message_count ?? 0}`,
     '',
     'Read only this final response from the subagent. Do not reread the full execution transcript unless the user explicitly asks for debugging details.',
     '',
@@ -33,17 +34,19 @@ export function sendSubagentCompletionMessage(pi: any, task: any): void {
         agent: task.agent,
         status: task.status,
         mode: task.mode,
+        effective_mode: task.effective_mode,
         model: task.model,
         effort: task.effort,
         usage: task.usage,
         result: task.result,
         error: task.error,
+        undelivered_message_count: task.undelivered_message_count ?? 0,
         error_metadata: safeCompletionErrorMetadata(task),
       },
     },
   }, {
-    triggerTurn: false,
-    deliverAs: 'steer',
+    triggerTurn: true,
+    deliverAs: 'followUp',
   });
 }
 
@@ -79,13 +82,15 @@ export function renderSubagentCompletionMessage(message: any, options: any, them
     render(width: number) {
       const blockWidth = Math.max(1, width);
       const contentWidth = Math.max(1, blockWidth - 2);
-      return sections.flatMap((section) => wrapLineToWidth(section.text, contentWidth).map((line) => {
+      const verticalPadding = theme.bg?.('customMessageBg', ' '.repeat(blockWidth)) ?? ' '.repeat(blockWidth);
+      const content = sections.flatMap((section) => wrapLineToWidth(section.text, contentWidth).map((line) => {
         const styled = color(section, line);
         const paddedVisibleWidth = Math.min(blockWidth, [...` ${line}`].length);
         const rightPadding = ' '.repeat(Math.max(0, blockWidth - paddedVisibleWidth));
         const padded = ` ${styled}${rightPadding}`;
         return theme.bg?.('customMessageBg', padded) ?? padded;
       }));
+      return [verticalPadding, ...content, verticalPadding];
     },
   };
 }

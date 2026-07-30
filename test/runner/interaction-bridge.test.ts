@@ -588,6 +588,69 @@ describe('subagent runner interaction-required bridge', () => {
     expect(result.effort).toBe('high');
   });
 
+  it('detects supported and unsupported Pi versions from the loaded SDK version export', async () => {
+    const { detectPiRuntimeSupport } = await import('../../src/runner/pi-sdk-module.js');
+
+    expect((detectPiRuntimeSupport as any)('0.83.0')).toEqual({
+      supported: true,
+      detected_pi_version: '0.83.0',
+      required_pi_version: '>=0.82.1',
+    });
+    expect((detectPiRuntimeSupport as any)('0.81.0')).toEqual({
+      supported: false,
+      detected_pi_version: '0.81.0',
+      required_pi_version: '>=0.82.1',
+    });
+    expect((detectPiRuntimeSupport as any)(undefined)).toEqual({
+      supported: false,
+      detected_pi_version: 'unknown',
+      required_pi_version: '>=0.82.1',
+    });
+  });
+
+  it('registers the nested SDK live steering bridge and clears it after settlement', async () => {
+    vi.resetModules();
+    const steer = vi.fn(async () => undefined);
+    const session = {
+      steer,
+      subscribe: vi.fn(() => vi.fn()),
+      prompt: vi.fn(async () => undefined),
+      messages: [{ role: 'assistant', content: 'done' }],
+      dispose: vi.fn(async () => undefined),
+    };
+    const createAgentSession = vi.fn(() => ({ session }));
+    vi.doMock('@earendil-works/pi-coding-agent', () => ({
+      VERSION: '0.83.0',
+      SessionManager: { inMemory: () => ({}) },
+      createAgentSession,
+    }));
+
+    try {
+      const { sdkSubagentRunner } = await import('../../src/runner.js');
+      const bridges: any[] = [];
+      let cleared = 0;
+      await sdkSubagentRunner({
+        definition: { name: 'sdd-apply', description: 'implementation executor', filePath: '/tmp/sdd-apply.md', instructions: 'return a concise result', tools: ['read'] },
+        task: 'implement work',
+        cwd: '/workspace',
+        ctx: { model: { provider: 'test', id: 'model' } },
+        config: { timeout_ms: 10_000, stall_timeout_ms: 10_000, max_concurrency: 1, default_tools: ['read'], model_profiles: {} },
+        signal: new AbortController().signal,
+        registerLiveBridge: (bridge) => bridges.push(bridge),
+        clearLiveBridge: () => { cleared += 1; },
+      });
+
+      expect(createAgentSession).toHaveBeenCalledOnce();
+      expect(bridges).toHaveLength(1);
+      expect(bridges[0]).toMatchObject({ supported: true, detected_pi_version: '0.83.0' });
+      bridges[0].steer('steer this nested session');
+      expect(steer).toHaveBeenCalledWith('steer this nested session');
+      expect(cleared).toBe(1);
+    } finally {
+      vi.doUnmock('../../src/runner/pi-sdk-module.js');
+    }
+  });
+
   it('registers nested SDK sessions as subagent interaction requesters while the prompt runs', async () => {
     vi.resetModules();
     const registryKey = Symbol.for('pi.subagents.interactionSessions');
@@ -647,6 +710,44 @@ describe('subagent runner interaction-required bridge', () => {
       if (previousRegistry === undefined) delete holder[registryKey];
       else holder[registryKey] = previousRegistry;
     }
+  });
+
+  it('consumes one queued message only after post-initial user-message safe boundaries', async () => {
+    let subscriber: ((event: unknown) => void) | undefined;
+    const consumed: string[] = [];
+    const session = {
+      subscribe: vi.fn((callback: (event: unknown) => void) => {
+        subscriber = callback;
+        return vi.fn();
+      }),
+      prompt: vi.fn(async () => {
+        subscriber?.({ type: 'message_start', message: { role: 'user' } });
+        subscriber?.({ type: 'message_start', message: { role: 'assistant' } });
+        subscriber?.({ type: 'message_start', message: { role: 'user' } });
+        subscriber?.({ type: 'message_start', message: { role: 'user' } });
+      }),
+      messages: [{ role: 'assistant', content: 'done' }],
+      dispose: vi.fn(async () => undefined),
+    };
+
+    const { promptWithInactivity } = await import('../../src/runner/event-processing.js');
+    await promptWithInactivity(
+      session,
+      'delegate',
+      10_000,
+      new AbortController().signal,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'delegated_task',
+      'delegate',
+      1,
+      () => consumed.push(`consume-${consumed.length + 1}`),
+    );
+
+    expect(consumed).toEqual(['consume-1', 'consume-2']);
   });
 
   it('aborts the created AgentSession and waits for prompt settlement on in-flight cancellation', async () => {

@@ -1,3 +1,5 @@
+import { wrapLineToWidth } from '../text-width.js';
+
 const TERMINAL_ESCAPE_RE = /\u001b\][^\u001b\u0007]*(?:\u001b\\|\u0007)|\u001b\[[0-?]*[ -/]*[@-~]/g;
 const TERMINAL_ESCAPE_AT_START_RE = /^(?:\u001b\][^\u001b\u0007]*(?:\u001b\\|\u0007)|\u001b\[[0-?]*[ -/]*[@-~])/;
 
@@ -34,6 +36,15 @@ export function textComponent(text: string) {
     invalidate() {},
     render(width: number) {
       return text.split('\n').map((line) => truncateStyledLine(line, width));
+    },
+  };
+}
+
+export function wrappedTextComponent(text: string) {
+  return {
+    invalidate() {},
+    render(width: number) {
+      return text.split('\n').flatMap((line) => wrapLineToWidth(line, width));
     },
   };
 }

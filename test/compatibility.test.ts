@@ -58,6 +58,7 @@ describe('compatibility smoke', () => {
       'subagent_result',
       'subagent_list_tasks',
       'subagent_cancel',
+      'subagent_send_message',
     ]);
     expect(events).toEqual(['session_start', 'session_shutdown']);
     expect(shortcuts).toEqual(expect.arrayContaining(['ctrl+,', 'ctrl+h']));

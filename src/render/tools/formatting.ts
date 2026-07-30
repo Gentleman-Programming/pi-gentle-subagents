@@ -49,8 +49,12 @@ export function formatTask(task: SubagentTask): string {
   const usage = formatUsage(task);
   const lines = [
     `agent: ${task.agent} · status: ${task.status} · attempt: ${task.attempt ?? 1} · id: ${task.id}`,
+    task.effective_mode ? `effective mode: ${task.effective_mode}` : undefined,
     modelEffortLine(task),
     usage ? `usage: ${usage}` : undefined,
+    task.status === 'queued' || task.status === 'running' || task.status === 'stopping'
+      ? `pending messages: ${task.pending_message_count ?? 0}`
+      : `undelivered messages: ${task.undelivered_message_count ?? 0}`,
     `last: ${task.last_activity ?? 'n/a'}${when ? ` at ${when}` : ''}`,
   ].filter(Boolean) as string[];
   const preview = clip(task.output_preview ?? task.result ?? task.error);

@@ -6,6 +6,7 @@ import { createSubagentStatusTool } from './subagent-status.js';
 import { createSubagentResultTool } from './subagent-result.js';
 import { createSubagentListTasksTool } from './subagent-list-tasks.js';
 import { createSubagentCancelTool } from './subagent-cancel.js';
+import { createSubagentSendMessageTool } from './subagent-send-message.js';
 
 export function registerSubagentTools(pi: any, manager: SubagentManager): void {
   pi.registerTool(createSubagentListAgentsTool(manager));
@@ -15,4 +16,5 @@ export function registerSubagentTools(pi: any, manager: SubagentManager): void {
   pi.registerTool(createSubagentResultTool(manager));
   pi.registerTool(createSubagentListTasksTool(manager));
   pi.registerTool(createSubagentCancelTool(manager));
+  pi.registerTool(createSubagentSendMessageTool(manager));
 }

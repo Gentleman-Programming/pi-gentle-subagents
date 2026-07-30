@@ -214,6 +214,49 @@ describe('thread view and render', () => {
     expect(rendered.indexOf('selecting suffix')).toBeLessThan(rendered.indexOf('CODE: UPDATED'));
   });
 
+  it('renders queued steering rows distinctly while preserving normal Pi-style consumed user rows', () => {
+    resetPiComponentCacheForTests();
+    const packageRoot = path.join(tmp, 'fake-pi-user-queue-package');
+    fs.mkdirSync(path.join(packageRoot, 'dist'), { recursive: true });
+    fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({ name: '@earendil-works/pi-coding-agent', main: 'index.cjs' }));
+    fs.writeFileSync(path.join(packageRoot, 'dist', 'cli.js'), '#!/usr/bin/env node\n');
+    const shimDir = path.join(tmp, 'bin-user-queue');
+    fs.mkdirSync(shimDir);
+    fs.symlinkSync(path.join(packageRoot, 'dist', 'cli.js'), path.join(shimDir, 'pi'));
+    fs.writeFileSync(path.join(packageRoot, 'index.cjs'), `
+      exports.getMarkdownTheme = () => ({ fakeMarkdownTheme: true });
+      exports.UserMessageComponent = class {
+        constructor(text, markdownTheme) { this.text = text; this.markdownTheme = markdownTheme; }
+        render(width) { return ['pi-user:' + width + ':' + this.markdownTheme.fakeMarkdownTheme + ':' + this.text]; }
+      };
+    `);
+    const oldArgv1 = process.argv[1];
+    process.argv[1] = path.join(shimDir, 'pi');
+    try {
+      const rendered = renderThreadBody({
+        version: 1,
+        source: 'events',
+        items: [
+          { type: 'attempt', attempt: 1 },
+          { type: 'user', label: 'queued', text: 'queued steering body' },
+          { type: 'user', label: 'user', text: 'consumed steering body' },
+        ],
+      } as any, {
+        cwd: tmp,
+        renderWidth: 80,
+        visibleWidth: (text: string) => text.length,
+        truncateToWidth: (text: string, width: number) => text.length > width ? text.slice(0, width) : text,
+      } as any).join('\n');
+
+      expect(rendered).toContain('pi-user:80:true:## queued live message\n\nqueued steering body');
+      expect(rendered).toContain('pi-user:80:true:consumed steering body');
+      expect(rendered).not.toContain('## queued live message\n\nconsumed steering body');
+    } finally {
+      process.argv[1] = oldArgv1;
+      resetPiComponentCacheForTests();
+    }
+  });
+
   it('resolves registered extension tool definitions from pi/context arrays and maps', () => {
     const memoryTool = { name: 'memory_search', label: 'Memory Search' };
     const readTool = { name: 'read', label: 'Read' };

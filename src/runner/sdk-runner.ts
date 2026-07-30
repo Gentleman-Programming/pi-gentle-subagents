@@ -5,7 +5,7 @@ import { SubagentStructuredError } from '../error-metadata.js';
 import { resolveSubagentsHistoryHome } from '../history.js';
 import type { EffectiveSubagentProfile, ModelRef, SubagentDefinition, SubagentErrorMetadata, SubagentRunner, SubagentsConfig, ThinkingEffort } from '../types.js';
 import { getInteractionSessionRegistry } from './interaction-session-registry.js';
-import { loadPiSdkModule } from './pi-sdk-module.js';
+import { detectPiRuntimeSupport, loadPiSdkModule } from './pi-sdk-module.js';
 import { buildPrompt } from './prompt.js';
 import { promptWithInactivity, structuredMetadataFromError } from './event-processing.js';
 
@@ -104,6 +104,14 @@ async function secureSessionPathWhenReady(sessionPath: string | undefined, attem
   }
 }
 
+function versionFromPiSdk(piSdk: any): unknown {
+  try {
+    return piSdk?.VERSION;
+  } catch {
+    return undefined;
+  }
+}
+
 async function createSession(
   model: any,
   cwd: string,
@@ -153,7 +161,7 @@ async function createSession(
     options.resourceLoader = resourceLoader;
   }
   const created = await createAgentSession(options);
-  return { ...created, nested_session_path: resolvedSessionPath };
+  return { ...created, nested_session_path: resolvedSessionPath, pi_version: versionFromPiSdk(piSdk) };
 }
 
 function createSessionAbortBridge(session: any, signal: AbortSignal) {
@@ -187,7 +195,20 @@ function providerFromModel(model: any): string | undefined {
   return typeof model?.provider === 'string' ? model.provider : undefined;
 }
 
-export const sdkSubagentRunner: SubagentRunner = async ({ definition, task, taskId, parentPiSessionId, context, cwd, ctx, config, signal, effectiveProfile, nested_session_path, continuation, onActivity }) => {
+function createLiveSteeringBridge(session: any, piVersion: unknown) {
+  const runtime = detectPiRuntimeSupport(piVersion);
+  const canSteer = typeof session?.steer === 'function';
+  return {
+    detected_pi_version: runtime.detected_pi_version,
+    supported: runtime.supported && canSteer,
+    steer(message: string): void {
+      if (!canSteer) throw new Error('Live steering is unavailable for this nested session.');
+      void Promise.resolve(session.steer(message)).catch(() => undefined);
+    },
+  };
+}
+
+export const sdkSubagentRunner: SubagentRunner = async ({ definition, task, taskId, parentPiSessionId, context, cwd, ctx, config, signal, effectiveProfile, nested_session_path, continuation, registerLiveBridge, clearLiveBridge, onQueuedMessageStart, onActivity }) => {
   const profile = effectiveProfile ?? resolveEffectiveSubagentProfile({ agentName: definition.name, definition, config, ctx });
   const preferred = selectedModel({ ctx, definition, profile });
   const effort = profile.effort.value;
@@ -204,7 +225,8 @@ export const sdkSubagentRunner: SubagentRunner = async ({ definition, task, task
 
   async function attempt(model: any) {
     onActivity?.({ message: `starting ${definition.name} with model ${modelLabel(model) ?? 'unknown'}${effort ? ` effort ${effort}` : ''}`, prompt, system_prompt: systemPrompt, effort });
-    const { session, nested_session_path: resolvedNestedSessionPath } = await createSession(model, cwd, tools, effort, config, ctx, systemPrompt, nested_session_path);
+    const { session, nested_session_path: resolvedNestedSessionPath, pi_version: piVersion } = await createSession(model, cwd, tools, effort, config, ctx, systemPrompt, nested_session_path);
+    registerLiveBridge?.(createLiveSteeringBridge(session, piVersion));
     onActivity?.({ message: 'nested session ready', nested_session_path: resolvedNestedSessionPath });
     const unregisterInteractionSession = registerInteractionSubagentSession(session, definition, taskId, parentPiSessionId ?? ctx?.sessionManager?.getSessionId?.());
     const abortBridge = createSessionAbortBridge(session, signal);
@@ -224,10 +246,11 @@ export const sdkSubagentRunner: SubagentRunner = async ({ definition, task, task
         cwd,
         effectiveSystemPrompt,
         taskId,
-        continuation?.previous_snapshot,
         continuation ? 'continuation' : 'delegated_task',
         continuation?.prompt ?? task,
         continuation?.attempt ?? 1,
+        onQueuedMessageStart,
+        continuation?.previous_snapshot,
       );
       if (signal.aborted) {
         await abortBridge.abortSession();
@@ -247,6 +270,7 @@ export const sdkSubagentRunner: SubagentRunner = async ({ definition, task, task
             operation: 'session.prompt',
           }));
     } finally {
+      clearLiveBridge?.();
       abortBridge.dispose();
       unregisterInteractionSession();
     }
