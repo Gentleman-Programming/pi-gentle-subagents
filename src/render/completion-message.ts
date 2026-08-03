@@ -3,6 +3,7 @@ import { appendSubagentResumeGuidance } from './tools/formatting.js';
 import { wrapLineToWidth } from './text-width.js';
 
 export function completionMessage(task: any): string {
+  const cwd = task?.cwd ?? process.cwd();
   const result = task.result ?? task.error ?? task.output_preview ?? '(no result captured)';
   const content = [
     `Subagent ${task.agent} ${task.status}: ${task.id}`,
@@ -14,7 +15,7 @@ export function completionMessage(task: any): string {
     '',
     result,
   ].join('\n');
-  return appendSubagentResumeGuidance(content, [task]);
+  return appendSubagentResumeGuidance(content, [task], cwd);
 }
 
 function safeCompletionErrorMetadata(task: any): Record<string, unknown> | undefined {
@@ -22,10 +23,10 @@ function safeCompletionErrorMetadata(task: any): Record<string, unknown> | undef
   return safeErrorMetadataDetails(task.error_metadata as any);
 }
 
-export function sendSubagentCompletionMessage(pi: any, task: any): void {
+export function sendSubagentCompletionMessage(pi: any, task: any, cwd = task?.cwd): void {
   pi.sendMessage?.({
     customType: 'subagent-completion',
-    content: completionMessage(task),
+    content: completionMessage({ ...task, cwd }),
     display: true,
     details: {
       full_result: task.result ?? task.error ?? task.output_preview,

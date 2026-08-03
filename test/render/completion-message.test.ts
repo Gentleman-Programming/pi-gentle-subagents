@@ -5,18 +5,29 @@ import { installSubagentTestEnv } from '../helpers/subagent-test-helpers.js';
 const env = installSubagentTestEnv();
 
 describe('completion message render', () => {
-  it('adds English resume instructions only to failed and cancelled completion messages', () => {
+  it('suppresses continuation guidance in failed and cancelled completion messages when continuation is disabled', () => {
     for (const status of ['failed', 'cancelled']) {
-      const message = completionMessage({ id: `subtask_${status}`, agent: 'analyst', status, error: `${status} result` });
+      const message = completionMessage({ id: `subtask_${status}`, agent: 'analyst', status, error: `${status} result`, cwd: env.tmp });
+      expect(message).not.toContain('subagent_continue');
+      expect(message).not.toContain('Ask the user before resuming');
+      expect(message).not.toContain('Never switch models automatically');
+    }
+
+    const completed = completionMessage({ id: 'subtask_completed', agent: 'analyst', status: 'completed', result: 'done', cwd: env.tmp });
+    expect(completed).not.toContain('subagent_continue');
+    expect(completed).not.toContain('Ask the user before resuming');
+  });
+
+  it('adds English resume instructions only to failed and cancelled completion messages when continuation is enabled', async () => {
+    await import('node:fs').then((fs) => fs.writeFileSync(`${env.tmp}/.pi/subagents.json`, JSON.stringify({ enable_continue: true })));
+
+    for (const status of ['failed', 'cancelled']) {
+      const message = completionMessage({ id: `subtask_${status}`, agent: 'analyst', status, error: `${status} result`, cwd: env.tmp });
       expect(message).toContain('can be resumed with `subagent_continue`');
       expect(message).toContain('Ask the user before resuming');
       expect(message).toContain('model and effort');
       expect(message).toContain('Never switch models automatically');
     }
-
-    const completed = completionMessage({ id: 'subtask_completed', agent: 'analyst', status: 'completed', result: 'done' });
-    expect(completed).not.toContain('subagent_continue');
-    expect(completed).not.toContain('Ask the user before resuming');
   });
 
   it('registers a compact/expanded renderer for background subagent completion messages', () => {
@@ -72,6 +83,24 @@ describe('completion message render', () => {
     expect(lines[1]).toContain('[subagent] discovery completed');
     expect(lines[2]).toContain('response: collapsed');
     expect(lines[3]).toBe(' '.repeat(80));
+  });
+
+  it('reads the task cwd configuration at notification time for background completion guidance', async () => {
+    const sendMessage = vi.fn();
+    await import('node:fs').then((fs) => fs.writeFileSync(`${env.tmp}/.pi/subagents.json`, JSON.stringify({ enable_continue: true })));
+    await import('node:fs').then((fs) => fs.writeFileSync(`${env.tmp}/.pi/subagents.json`, JSON.stringify({ enable_continue: false })));
+
+    sendSubagentCompletionMessage({ sendMessage }, {
+      id: 'subtask_notify_disabled',
+      agent: 'analyst',
+      status: 'failed',
+      mode: 'background',
+      error: 'done while disabled',
+      cwd: env.tmp,
+    });
+
+    expect(sendMessage.mock.calls[0][0].content).not.toContain('subagent_continue');
+    expect(sendMessage.mock.calls[0][0].content).not.toContain('Ask the user before resuming');
   });
 
   it('delivers background completion messages as follow-up turns that automatically trigger the orchestrator exactly once', () => {

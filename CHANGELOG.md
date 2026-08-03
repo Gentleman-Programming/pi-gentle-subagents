@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.1
+
+### Fixed
+- Preserved validated finalized subagent responses when later nested `session.prompt()` calls fail, while keeping explicit error, aborted, and streaming-only partial responses classified as failures.
+- Updated `subagent_run` guidance to omit `mode` unless the user explicitly requests task or background, allowing automatic mode selection.
+- Added opt-in `enable_continue` configuration with global/project cascading defaults, conditional `subagent_continue` registration after reload or restart, manager-level disabled guarding, and suppressed continuation recommendations while disabled.
+- Kept historical continuation records visible even when new continuation is disabled.
+- Aligned README and subagents-configuration skill guidance with the implemented continuation contract.
+
 ## 1.5.0 - 2026-07-30
 
 ### Added

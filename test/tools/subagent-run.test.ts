@@ -20,6 +20,20 @@ describe('subagent_run tool', () => {
     expect(readme).toContain('background_task_ids');
   });
 
+  it('registers model-facing guidance to omit mode unless the user explicitly requested task or background', async () => {
+    env.writeAgent('analyst');
+    const manager = new SubagentManager(env.mockRunner(0));
+    let runTool: any;
+    registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_run') runTool = tool; } }, manager);
+
+    expect(runTool.description).toContain('omit mode');
+    expect(runTool.description).toContain('task');
+    expect(runTool.description).toContain('background');
+    expect(runTool.promptSnippet).toContain('omit mode');
+    expect(runTool.promptSnippet).toContain('manager');
+    expect(runTool.parameters.properties.mode).toBeDefined();
+  });
+
   it('tells the agent to free the chat and wait for automatic notification after background launch', async () => {
     env.writeAgent('analyst');
     const manager = new SubagentManager(env.mockRunner(50));
@@ -114,8 +128,22 @@ describe('subagent_run tool', () => {
     expect(expanded).toContain('to=functions.memory_get');
   });
 
+  it('returns an error tool result without continuation guidance when continuation is disabled', async () => {
+    env.writeAgent('analyst');
+    const manager = new SubagentManager(async () => { throw new Error('review failed'); });
+    let runTool: any;
+    registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_run') runTool = tool; } }, manager);
+    const result = await runTool.execute('1', { agent: 'analyst', task: 'fail', mode: 'task' }, undefined, undefined, { cwd: env.tmp });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('failed');
+    expect(result.content[0].text).not.toContain('subagent_continue');
+    expect(result.content[0].text).not.toContain('Ask the user before resuming');
+    expect(result.content[0].text).not.toContain('Never switch models automatically');
+  });
+
   it('returns an error tool result when any task-mode subagent fails', async () => {
     env.writeAgent('analyst');
+    await import('node:fs').then((fs) => fs.writeFileSync(`${env.tmp}/.pi/subagents.json`, JSON.stringify({ enable_continue: true })));
     const manager = new SubagentManager(async () => { throw new Error('review failed'); });
     let runTool: any;
     registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_run') runTool = tool; } }, manager);

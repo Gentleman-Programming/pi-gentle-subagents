@@ -102,7 +102,7 @@ function lastAssistantFailure(messages: any[]): { stopReason?: string; errorMess
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index];
     if (message?.role !== 'assistant') continue;
-    if (message?.stopReason === 'error' || typeof message?.errorMessage === 'string') {
+    if (message?.stopReason === 'error' || message?.stopReason === 'aborted' || typeof message?.errorMessage === 'string') {
       return { stopReason: message.stopReason, errorMessage: message.errorMessage };
     }
   }
@@ -181,6 +181,22 @@ function failingToolNames(snapshot?: SubagentThreadSnapshot): string[] {
     if (item.type === 'bash' && item.status === 'failed') names.add('bash');
   }
   return [...names].slice(0, 3);
+}
+
+function collectFinalizedAssistantText(messages: any[]): string {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (message?.role !== 'assistant') continue;
+    if (message?.stopReason === 'error' || message?.stopReason === 'aborted' || typeof message?.errorMessage === 'string') return '';
+    const content = message?.content;
+    const parts: string[] = [];
+    if (typeof content === 'string') parts.push(content);
+    if (Array.isArray(content)) {
+      for (const part of content) if (part?.type === 'text' && typeof part.text === 'string') parts.push(part.text);
+    }
+    return parts.join('\n').trim();
+  }
+  return '';
 }
 
 export async function promptWithInactivity(
@@ -342,19 +358,33 @@ export async function promptWithInactivity(
       onActivity?.({ message: `failed: ${metadata.message}`, output: '', transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts, live_activity: liveActivity.project() });
       throw new SubagentStructuredError(metadata);
     }
-    if (promptError) throw promptError;
     const assistantFailure = lastAssistantFailure(currentMessages);
     if (assistantFailure) {
-      const metadata = classifyAssistantFailure({
-        ...assistantFailure,
-        sawToolActivity,
-      });
+      const metadata = assistantFailure.stopReason === 'aborted'
+        ? normalizeErrorMetadata({
+            category: 'interrupted',
+            phase: 'assistant_final',
+            message: 'Assistant aborted without a final response.',
+            partial_result_available: false,
+            details: { interrupt_reason: 'assistant_aborted' },
+          })
+        : classifyAssistantFailure({
+            ...assistantFailure,
+            sawToolActivity,
+          });
       if (metadata) {
         transcript += `\n\n# subagent failure\n\n${metadata.message}`;
         onActivity?.({ message: `failed: ${metadata.message}`, output: '', transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts, live_activity: liveActivity.project() });
         throw new SubagentStructuredError(metadata);
       }
     }
+    const finalizedAssistantText = collectFinalizedAssistantText(currentMessages);
+    if (promptError && finalizedAssistantText) {
+      transcript += `\n\n# final assistant text\n\n${finalizedAssistantText}`;
+      onActivity?.({ message: 'collected final response', output: finalizedAssistantText, transcript, usage, thread_snapshot, interaction_request: latestInteractionRequest, pi_retry_attempts: piRetryAttempts, live_activity: liveActivity.project() });
+      return { result: finalizedAssistantText, usage, thread_snapshot, interaction_request: latestInteractionRequest };
+    }
+    if (promptError) throw promptError;
     const messageText = collectAssistantText(currentMessages);
     const streamedFallback = sawToolActivity ? '' : output.trim();
     const collected = sanitizeInteractionTransportText(messageText || streamedFallback);

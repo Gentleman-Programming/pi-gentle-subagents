@@ -5,9 +5,29 @@ import { installSubagentTestEnv } from '../helpers/subagent-test-helpers.js';
 
 const env = installSubagentTestEnv();
 
+async function enableContinue() {
+  await import('node:fs').then((fs) => fs.writeFileSync(`${env.tmp}/.pi/subagents.json`, JSON.stringify({ enable_continue: true })));
+}
+
 describe('subagent_continue tool', () => {
+  it('registers subagent_continue only when continuation is explicitly enabled', async () => {
+    env.writeAgent('analyst');
+    const manager = new SubagentManager(env.mockRunner(0));
+    const defaultTools: string[] = [];
+    registerSubagentTools({ registerTool: (tool: any) => { defaultTools.push(tool.name); } }, manager, env.tmp);
+
+    expect(defaultTools).not.toContain('subagent_continue');
+
+    await enableContinue();
+    const enabledTools: string[] = [];
+    registerSubagentTools({ registerTool: (tool: any) => { enabledTools.push(tool.name); } }, manager, env.tmp);
+
+    expect(enabledTools).toContain('subagent_continue');
+  });
+
   it('registers an auditable continuation tool, preserves the task id, and warns that overrides require explicit user direction', async () => {
     env.writeAgent('analyst');
+    await enableContinue();
     const nestedSessionPath = `${env.tmp}/resume-session.jsonl`;
     await import('node:fs').then((fs) => fs.writeFileSync(nestedSessionPath, '{"type":"session"}\n'));
     const manager = new SubagentManager(async ({ continuation, nested_session_path, effectiveProfile, onActivity }) => {
@@ -21,7 +41,7 @@ describe('subagent_continue tool', () => {
       } as any;
     });
     let continueTool: any;
-    registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_continue') continueTool = tool; } }, manager);
+    registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_continue') continueTool = tool; } }, manager, env.tmp);
 
     const first = await manager.run({ agent: 'analyst', task: 'initial execution', mode: 'task' }, { cwd: env.tmp });
     const taskId = first.task_ids[0]!;
@@ -49,6 +69,7 @@ describe('subagent_continue tool', () => {
   });
 
   it('streams the same live task-mode progress rendering as subagent_run before completion', async () => {
+    await enableContinue();
     env.writeAgent('analyst');
     const nestedSessionPath = `${env.tmp}/live-resume-session.jsonl`;
     await import('node:fs').then((fs) => fs.writeFileSync(nestedSessionPath, '{"type":"session"}\n'));
@@ -62,7 +83,7 @@ describe('subagent_continue tool', () => {
       return { result: 'initial result', model: 'mock/model', effort: 'high', fallback_used: false, nested_session_path: nestedSessionPath } as any;
     });
     let continueTool: any;
-    registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_continue') continueTool = tool; } }, manager);
+    registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_continue') continueTool = tool; } }, manager, env.tmp);
     const ctx = { cwd: env.tmp, model: { provider: 'mock', id: 'model' }, thinkingLevel: 'high', ui: { onTerminalInput: vi.fn(() => () => undefined) } };
     const first = await manager.run({ agent: 'analyst', task: 'initial execution', mode: 'task' }, ctx);
     const updates: any[] = [];
@@ -87,6 +108,7 @@ describe('subagent_continue tool', () => {
   });
 
   it('supports double-escape cancellation while a continued task is running', async () => {
+    await enableContinue();
     env.writeAgent('analyst');
     const nestedSessionPath = `${env.tmp}/cancel-live-resume-session.jsonl`;
     await import('node:fs').then((fs) => fs.writeFileSync(nestedSessionPath, '{"type":"session"}\n'));
@@ -100,7 +122,7 @@ describe('subagent_continue tool', () => {
       return { result: 'unreachable', model: 'mock/model', fallback_used: false, nested_session_path: nestedSessionPath } as any;
     });
     let continueTool: any;
-    registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_continue') continueTool = tool; } }, manager);
+    registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_continue') continueTool = tool; } }, manager, env.tmp);
     const first = await manager.run({ agent: 'analyst', task: 'initial execution', mode: 'task' }, { cwd: env.tmp });
     const terminalHandlers: Array<(data: string) => any> = [];
     const abort = vi.fn();
@@ -125,6 +147,7 @@ describe('subagent_continue tool', () => {
   });
 
   it('starts a fresh continuation attempt without restoring the prior live queue', async () => {
+    await enableContinue();
     const fs = await import('node:fs');
     const path = await import('node:path');
     fs.writeFileSync(path.join(env.tmp, '.pi', 'subagents', 'backgrounder.md'), `---\nname: backgrounder\ndescription: background agent\nsubagent_mode: background\ntools:\n  - read\n---\n# Agent`);
@@ -160,6 +183,7 @@ describe('subagent_continue tool', () => {
   });
 
   it('preserves omitted background mode and renders it consistently for continuations', async () => {
+    await enableContinue();
     const fs = await import('node:fs');
     const path = await import('node:path');
     fs.writeFileSync(path.join(env.tmp, '.pi', 'subagents', 'backgrounder.md'), `---\nname: backgrounder\ndescription: background agent\nsubagent_mode: background\ntools:\n  - read\n---\n# Agent`);
@@ -174,7 +198,7 @@ describe('subagent_continue tool', () => {
       });
     });
     let continueTool: any;
-    registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_continue') continueTool = tool; } }, manager);
+    registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_continue') continueTool = tool; } }, manager, env.tmp);
 
     const first = await manager.run({ agent: 'backgrounder', task: 'initial execution', mode: 'background' }, { cwd: env.tmp });
     await vi.waitFor(() => expect(manager.getTask(first.task_ids[0]!, env.tmp)?.status).toBe('completed'));
@@ -197,6 +221,7 @@ describe('subagent_continue tool', () => {
   });
 
   it('lets an explicit task continuation override a previous background mode and wait for completion', async () => {
+    await enableContinue();
     const fs = await import('node:fs');
     const path = await import('node:path');
     fs.writeFileSync(path.join(env.tmp, '.pi', 'subagents', 'backgrounder.md'), `---\nname: backgrounder\ndescription: background agent\nsubagent_mode: background\ntools:\n  - read\n---\n# Agent`);
@@ -209,7 +234,7 @@ describe('subagent_continue tool', () => {
       return { result: 'continued in task mode', model: 'mock/model', fallback_used: false, nested_session_path: nestedSessionPath } as any;
     });
     let continueTool: any;
-    registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_continue') continueTool = tool; } }, manager);
+    registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_continue') continueTool = tool; } }, manager, env.tmp);
 
     const first = await manager.run({ agent: 'backgrounder', task: 'initial execution', mode: 'background' }, { cwd: env.tmp });
     await vi.waitFor(() => expect(manager.getTask(first.task_ids[0]!, env.tmp)?.status).toBe('completed'));
@@ -227,6 +252,7 @@ describe('subagent_continue tool', () => {
   });
 
   it('lets an explicit background continuation override a previous task mode and return immediately', async () => {
+    await enableContinue();
     env.writeAgent('analyst');
     const nestedSessionPath = `${env.tmp}/explicit-background-continue-session.jsonl`;
     await import('node:fs').then((fs) => fs.writeFileSync(nestedSessionPath, '{"type":"session"}\n'));
@@ -239,7 +265,7 @@ describe('subagent_continue tool', () => {
       });
     });
     let continueTool: any;
-    registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_continue') continueTool = tool; } }, manager);
+    registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_continue') continueTool = tool; } }, manager, env.tmp);
 
     const first = await manager.run({ agent: 'analyst', task: 'initial execution', mode: 'task' }, { cwd: env.tmp });
     const taskId = first.task_ids[0]!;
@@ -261,6 +287,7 @@ describe('subagent_continue tool', () => {
   });
 
   it('supports ctrl+h background handoff for task-mode continuations', async () => {
+    await enableContinue();
     const fs = await import('node:fs');
     env.writeAgent('analyst');
     const nestedSessionPath = `${env.tmp}/background-live-resume-session.jsonl`;
@@ -271,7 +298,7 @@ describe('subagent_continue tool', () => {
       return { result: continuation ? 'background continuation done' : 'initial result', model: 'mock/model', fallback_used: false, nested_session_path: nestedSessionPath } as any;
     });
     let continueTool: any;
-    registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_continue') continueTool = tool; } }, manager);
+    registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_continue') continueTool = tool; } }, manager, env.tmp);
     const first = await manager.run({ agent: 'analyst', task: 'initial execution', mode: 'task' }, { cwd: env.tmp });
     const terminalHandlers: Array<(data: string) => any> = [];
     const resultPromise = continueTool.execute(
@@ -293,6 +320,7 @@ describe('subagent_continue tool', () => {
   });
 
   it('returns failed resumed attempts as errors with user-decision guidance', async () => {
+    await enableContinue();
     env.writeAgent('analyst');
     const nestedSessionPath = `${env.tmp}/failed-resume-session.jsonl`;
     await import('node:fs').then((fs) => fs.writeFileSync(nestedSessionPath, '{"type":"session"}\n'));
@@ -304,7 +332,7 @@ describe('subagent_continue tool', () => {
       return { result: 'initial result', model: 'mock/model', fallback_used: false, nested_session_path: nestedSessionPath } as any;
     });
     let continueTool: any;
-    registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_continue') continueTool = tool; } }, manager);
+    registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_continue') continueTool = tool; } }, manager, env.tmp);
 
     const first = await manager.run({ agent: 'analyst', task: 'initial execution', mode: 'task' }, { cwd: env.tmp });
     const result = await continueTool.execute('1', { task_id: first.task_ids[0], prompt: 'Try the next step.' }, undefined, undefined, { cwd: env.tmp });
@@ -317,6 +345,7 @@ describe('subagent_continue tool', () => {
   });
 
   it('rejects legacy tasks without a valid persisted nested session file', async () => {
+    await enableContinue();
     const history = new (await import('../../src/history.js')).SubagentHistoryStore();
     history.upsertTask(env.tmp, {
       id: 'subtask_legacy_resume',
@@ -331,7 +360,7 @@ describe('subagent_continue tool', () => {
     } as any);
     const manager = new SubagentManager(env.mockRunner(), history);
     let continueTool: any;
-    registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_continue') continueTool = tool; } }, manager);
+    registerSubagentTools({ registerTool: (tool: any) => { if (tool.name === 'subagent_continue') continueTool = tool; } }, manager, env.tmp);
 
     const result = await continueTool.execute('1', { task_id: 'subtask_legacy_resume', prompt: 'resume it' }, undefined, undefined, { cwd: env.tmp });
 

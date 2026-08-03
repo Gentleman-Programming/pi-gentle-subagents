@@ -76,7 +76,7 @@ export function createSubagentContinueTool(manager: SubagentManager) {
           return isBackground ? response : { ...response, terminate: true };
         }
         const tasks = result.results ?? [];
-        const text = formatTaskModeContent(tasks);
+        const text = formatTaskModeContent(tasks, ctx?.cwd ?? process.cwd());
         const details = compactResultDetails({ task: tasks[0], ...result });
         return tasks.some((task) => task.status === 'failed' || task.status === 'cancelled')
           ? { ...fail(text), details }
@@ -84,7 +84,7 @@ export function createSubagentContinueTool(manager: SubagentManager) {
       } catch (e) {
         if (!cancelledByDoubleEscape) return fail(e);
         const message = e instanceof Error ? e.message : String(e);
-        return fail(appendSubagentResumeGuidance(message, latestTasks.length ? latestTasks : [{ status: 'cancelled' }]));
+        return fail(appendSubagentResumeGuidance(message, latestTasks.length ? latestTasks : [{ status: 'cancelled' }], ctx?.cwd ?? process.cwd()));
       } finally {
         active = false;
         if (interval) clearInterval(interval);

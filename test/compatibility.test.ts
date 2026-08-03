@@ -33,7 +33,7 @@ describe('compatibility smoke', () => {
     expect(typeof renderSubagentCompletionMessage).toBe('function');
   });
 
-  it('preserves extension registration order and contract names', () => {
+  it('preserves extension registration order and contract names with continuation disabled by default', () => {
     const calls: string[] = [];
     const shortcuts: string[] = [];
     const commands: string[] = [];
@@ -53,7 +53,6 @@ describe('compatibility smoke', () => {
     expect(tools).toEqual([
       'subagent_list_agents',
       'subagent_run',
-      'subagent_continue',
       'subagent_status',
       'subagent_result',
       'subagent_list_tasks',
@@ -63,5 +62,30 @@ describe('compatibility smoke', () => {
     expect(events).toEqual(['session_start', 'session_shutdown']);
     expect(shortcuts).toEqual(expect.arrayContaining(['ctrl+,', 'ctrl+h']));
     expect(commands).toEqual(['subagents', 'subagent-models']);
+  });
+
+  it('restores subagent_continue registration when continuation is explicitly enabled before extension initialization', async () => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-subagents-compat-'));
+    const previousCwd = process.cwd();
+    process.chdir(tmp);
+    try {
+      fs.mkdirSync(path.join(tmp, '.pi'), { recursive: true });
+      fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ enable_continue: true }));
+      const tools: string[] = [];
+      extension({
+        registerMessageRenderer: () => undefined,
+        registerTool: vi.fn((tool: { name: string }) => { tools.push(tool.name); }),
+        on: () => undefined,
+        registerShortcut: () => undefined,
+        registerCommand: () => undefined,
+      });
+      expect(tools).toContain('subagent_continue');
+    } finally {
+      process.chdir(previousCwd);
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

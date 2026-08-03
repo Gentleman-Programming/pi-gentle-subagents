@@ -15,10 +15,10 @@ function currentSessionId(ctx: any): string | undefined {
 
 export default function subagentsExtension(pi: any): void {
   pi.registerMessageRenderer?.('subagent-completion', renderSubagentCompletionMessage);
-  const manager = new SubagentManager(undefined, undefined, (task) => {
-    sendSubagentCompletionMessage(pi, task);
+  const manager = new SubagentManager(undefined, undefined, (task, cwd) => {
+    sendSubagentCompletionMessage(pi, task, cwd);
   });
-  registerSubagentTools(pi, manager);
+  registerSubagentTools(pi, manager, process.cwd());
 
   let widgetTimer: NodeJS.Timeout | undefined;
   let widgetCtx: any;

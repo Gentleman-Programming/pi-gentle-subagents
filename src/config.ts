@@ -250,6 +250,7 @@ export function readSubagentsConfig(cwd: string): SubagentsConfig {
     background_handoff_shortcut: parseBackgroundHandoffShortcut(raw.background_handoff_shortcut ?? raw.backgroundHandoffShortcut),
     history_panel_shortcut: parseCtrlShortcut(raw.history_panel_shortcut ?? raw.historyPanelShortcut, DEFAULT_HISTORY_PANEL_SHORTCUT),
     detail_cancel_shortcut: parseDetailShortcut(raw.detail_cancel_shortcut ?? raw.detailCancelShortcut),
+    enable_continue: parseBoolean(raw.enable_continue ?? raw.enableContinue, false),
     debug: parseBoolean(raw.debug, false),
     render_debug: parseRenderDebugConfig(globalRaw, projectRaw),
   };

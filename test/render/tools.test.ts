@@ -129,7 +129,7 @@ describe('tool render helpers', () => {
   });
 
   it('renders the effective continuation mode from explicit override, previous task state, and config fallback', async () => {
-    fs.writeFileSync(path.join(env.tmp, '.pi', 'subagents.json'), JSON.stringify({ default_mode: 'background' }));
+    fs.writeFileSync(path.join(env.tmp, '.pi', 'subagents.json'), JSON.stringify({ enable_continue: true, default_mode: 'background' }));
     env.writeAgent('analyst');
     const previousCwd = process.cwd();
     process.chdir(env.tmp);

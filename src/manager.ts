@@ -300,7 +300,7 @@ export class SubagentManager {
   constructor(
     private runner: SubagentRunner = sdkSubagentRunner,
     private history = new SubagentHistoryStore(),
-    private onTerminalBackgroundTask?: (task: SubagentTask) => void,
+    private onTerminalBackgroundTask?: (task: SubagentTask, cwd: string) => void,
   ) {}
 
   listAgents(cwd: string, ctx: any = {}) {
@@ -578,21 +578,23 @@ export class SubagentManager {
     onTaskUpdate?: (tasks: SubagentTask[]) => void,
   ): Promise<{ mode: 'task' | 'background'; task_ids: string[]; results?: SubagentTask[] }> {
     const cwd = ctx?.cwd ?? process.cwd();
-    const existing = this.getTask(input.task_id, cwd);
+    const taskCwd = this.taskCwds.get(input.task_id) ?? cwd;
+    const existing = this.getTask(input.task_id, taskCwd);
     if (!existing) throw new Error(`Subagent task not found: ${input.task_id}`);
+    if (!readSubagentsConfig(taskCwd).enable_continue) throw new Error('Subagent task is not available.');
     if (existing.status !== 'stopping' && !isTerminalStatus(existing.status)) throw new Error('Only completed, failed, or cancelled subagent tasks can continue.');
     await this.awaitRunnerCleanup(existing.id);
-    const latest = this.getTask(input.task_id, cwd) ?? existing;
+    const latest = this.getTask(input.task_id, taskCwd) ?? existing;
     if (!isTerminalStatus(latest.status)) throw new Error('Only completed, failed, or cancelled subagent tasks can continue.');
     if (!latest.nested_session_path || !fs.existsSync(latest.nested_session_path)) {
       throw new Error(`Subagent task ${input.task_id} is missing or unreadable nested session file: ${latest.nested_session_path ?? 'unknown'}`);
     }
 
-    const config = readSubagentsConfig(cwd);
-    const definitions = new Map(loadSubagents(cwd).map((definition) => [definition.name, definition]));
+    const config = readSubagentsConfig(taskCwd);
+    const definitions = new Map(loadSubagents(taskCwd).map((definition) => [definition.name, definition]));
     const definition = definitions.get(latest.agent.toLowerCase());
     if (!definition) throw new Error(`Subagent definition not found for continuation: ${latest.agent}`);
-    try { this.history.upsertTask(cwd, { ...latest, attempt: latest.attempt ?? 1 }); } catch {}
+    try { this.history.upsertTask(taskCwd, { ...latest, attempt: latest.attempt ?? 1 }); } catch {}
     const effectiveProfile = resolveContinuationProfile(definition, config, ctx, input);
     const effectiveMode = resolveContinuationEffectiveMode({ explicitMode: input.mode, previousTask: latest, config });
     const continuationPrompt = sanitizeInteractionTransportText(input.prompt);
@@ -630,7 +632,7 @@ export class SubagentManager {
       taskText: latest.task,
       context: latest.context,
       task,
-      ctx,
+      ctx: { ...ctx, cwd: taskCwd },
       config,
       effectiveProfile,
       parentSessionId: continuationSessionId,
@@ -639,7 +641,7 @@ export class SubagentManager {
       continuationPrompt,
       parentSignal,
       onTaskUpdate: () => onTaskUpdate?.([this.tasks.get(task.id)!].filter(Boolean)),
-      limiter: this.limiter(cwd, config.max_concurrency),
+      limiter: this.limiter(taskCwd, config.max_concurrency),
     });
     if (effectiveMode === 'background') return { mode: effectiveMode, task_ids: [task.id] };
     await this.wait(task.id);
@@ -930,14 +932,14 @@ export class SubagentManager {
         this.notifyTaskUpdate(id, onTaskUpdate, true);
         if (task.mode === 'background') {
           ctx?.ui?.notify?.(`Subagent ${definition.name} completed: ${id}`, 'info');
-          this.onTerminalBackgroundTask?.(task);
+          this.onTerminalBackgroundTask?.(task, cwd);
         }
       } catch (error) {
         if (task.status === 'stopping') {
           await activeRunnerSettlement?.catch(() => undefined);
           activeRunnerSettlement = undefined;
           this.finalizeStop(task, parentSessionId, cwd, onTaskUpdate);
-          if (task.mode === 'background') this.onTerminalBackgroundTask?.(task);
+          if (task.mode === 'background') this.onTerminalBackgroundTask?.(task, cwd);
           return;
         }
         if (isTerminalStatus(task.status)) return;
@@ -968,7 +970,7 @@ export class SubagentManager {
         this.record(cwd, task, task.last_activity, true);
         this.notifyTaskUpdate(id, onTaskUpdate, true);
         ctx?.ui?.notify?.(`Subagent ${definition.name} failed: ${task.error}`, 'warning');
-        if (task.mode === 'background') this.onTerminalBackgroundTask?.(task);
+        if (task.mode === 'background') this.onTerminalBackgroundTask?.(task, cwd);
       } finally {
         if (timeout) clearTimeout(timeout);
         await activeRunnerSettlement?.catch(() => undefined);

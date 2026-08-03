@@ -1,3 +1,4 @@
+import { readSubagentsConfig } from '../config.js';
 import type { SubagentTask } from '../types.js';
 
 export const SUBAGENT_RESUME_GUIDANCE = [
@@ -7,8 +8,9 @@ export const SUBAGENT_RESUME_GUIDANCE = [
   "Do not resume or override the model or effort without the user's explicit decision. Never switch models automatically.",
 ].join('\n');
 
-export function appendSubagentResumeGuidance(text: string, tasks: Array<Pick<SubagentTask, 'status'>>): string {
-  return tasks.some((task) => task.status === 'failed' || task.status === 'cancelled' || task.status === 'interrupted' || task.status === 'stopping')
+export function appendSubagentResumeGuidance(text: string, tasks: Array<Pick<SubagentTask, 'status'>>, cwd = process.cwd()): string {
+  return readSubagentsConfig(cwd).enable_continue
+    && tasks.some((task) => task.status === 'failed' || task.status === 'cancelled' || task.status === 'interrupted' || task.status === 'stopping')
     ? `${text}\n\n${SUBAGENT_RESUME_GUIDANCE}`
     : text;
 }
@@ -118,7 +120,7 @@ export function taskFinalText(task: SubagentTask | undefined, result?: any): str
   return task?.result ?? task?.error ?? task?.output_preview ?? '';
 }
 
-export function formatTaskModeContent(tasks: SubagentTask[]): string {
+export function formatTaskModeContent(tasks: SubagentTask[], cwd = process.cwd()): string {
   const content = [
     `Completed ${tasks.length} subagent task(s):`,
     ...tasks.map((task) => {
@@ -129,7 +131,7 @@ export function formatTaskModeContent(tasks: SubagentTask[]): string {
       ].filter(Boolean).join('\n');
     }),
   ].join('\n\n');
-  return appendSubagentResumeGuidance(content, tasks);
+  return appendSubagentResumeGuidance(content, tasks, cwd);
 }
 
 export function backgroundLaunchContent(taskIds: string[], verb = 'Sent'): string {

@@ -62,6 +62,7 @@ export type SubagentsConfig = {
   background_handoff_shortcut?: string;
   history_panel_shortcut?: string;
   detail_cancel_shortcut?: string;
+  enable_continue?: boolean;
   debug?: boolean;
   render_debug?: SubagentsRenderDebugConfig;
 };

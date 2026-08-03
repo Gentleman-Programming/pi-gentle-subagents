@@ -1,12 +1,12 @@
 # Pi Subagents Extension
 
-Pi extension for delegating work to markdown-defined subagents. It registers tools for the orchestrator, runs subagents in isolated in-memory Pi sessions, tracks task history, provides a TUI history panel, and supports per-subagent model/thinking-effort profiles.
+Pi extension for delegating work to markdown-defined subagents. Continuation is unavailable by default: `subagent_continue` is exposed only when effective `enable_continue` is explicitly `true`. The extension registers tools for the orchestrator, runs subagents in isolated in-memory Pi sessions, tracks task history, provides a TUI history panel, and supports per-subagent model/thinking-effort profiles.
 
 ## What it provides
 
 - Markdown-defined subagents loaded from global and project directories.
 - `subagent_run` for task-mode or background delegation to one or many agents.
-- `subagent_continue` for resuming the exact persisted nested session with optional mode/model/effort overrides.
+- Optional `subagent_continue` for resuming the exact persisted nested session with optional mode/model/effort overrides when `enable_continue: true`.
 - `subagent_send_message` for live same-parent steering of owned background tasks on supported Pi runtimes.
 - Status/result/list/cancel tools for delegated tasks.
 - Isolated in-memory agent sessions for each subagent run.
@@ -171,6 +171,9 @@ Choose the narrowest scope that matches the intended behavior:
 
 Config resolves as a field-by-field cascade:
 
+`enable_continue` follows the same cascade and defaults to `false`. Because tool exposure is decided when the extension loads, changing `enable_continue` takes effect after `/reload` or a Pi restart.
+
+
 1. Project `.pi/subagents.json` values win when present.
 2. Missing project fields inherit from global `$PI_CODING_AGENT_DIR/subagents.json` or `~/.pi/agent/subagents.json`.
 3. Fields missing from both use built-in defaults.
@@ -207,6 +210,7 @@ The same JSON shape is valid globally or project-locally; place it only in the s
   "default_model": "anthropic/claude-sonnet-4-5",
   "default_effort": "medium",
   "default_mode": "task",
+  "enable_continue": false,
   "timeout_ms": 1200000,
   "stall_timeout_ms": 240000,
   "max_concurrency": 5,
@@ -242,6 +246,7 @@ The same JSON shape is valid globally or project-locally; place it only in the s
 | `default_model` | current orchestrator model | Fallback model for all subagents. Format: `provider/model-id`. |
 | `default_effort` | current orchestrator effort | Fallback thinking effort. Also accepts `default_thinking_level` or `thinkingLevel`. |
 | `default_mode` | `task` | Fallback execution mode when neither the invocation nor the selected definition sets one. Accepts `task` or `background`. |
+| `enable_continue` | `false` | Opt-in gate for new continuations and `subagent_continue` tool exposure. Project values override global values; changing it requires `/reload` or restart before tool availability changes. |
 | `model_profiles` | `{}` | Per-agent model/effort overrides scoped to matching definitions. Project-local profiles apply to project-local definitions; global profiles apply to global definitions. |
 | `timeout_ms` | `1200000` | Total timeout per subagent task (20 minutes). |
 | `stall_timeout_ms` | `240000` | Inactivity timeout for a subagent session (4 minutes). |
@@ -326,7 +331,7 @@ Useful event names:
 |---|---|
 | `subagent_list_agents` | List loaded markdown-defined subagents. |
 | `subagent_run` | Delegate a task to one or more subagents. Supports `task` and `background` mode. |
-| `subagent_continue` | Resume a completed, failed, or cancelled task in the same persisted nested Pi session, with an optional continuation-mode override. |
+| `subagent_continue` | Enabled only when `enable_continue: true`. Resumes a completed, failed, or cancelled task in the same persisted nested Pi session, with an optional continuation-mode override. |
 | `subagent_status` | Get status for a delegated task. |
 | `subagent_send_message` | Queue a live message for an owned running background task. |
 | `subagent_result` | Read the result for a delegated task. |
@@ -381,6 +386,10 @@ Examples:
 
 ### `subagent_continue`
 
+`subagent_continue` is disabled by default. Set effective `enable_continue: true` and then `/reload` or restart Pi before expecting the tool to appear.
+
+When effective `enable_continue` is `false`, the tool is not registered, direct or stale continuation attempts receive a generic unavailable response, historical task and continuation records remain visible, and failed/cancelled/interrupted/stopping terminal results plus terminal background notifications do not recommend continuation or mention `subagent_continue`.
+
 Parameters:
 
 ```ts
@@ -396,6 +405,7 @@ Parameters:
 Behavior:
 
 - Continuations keep the same `task_id` and exact persisted nested Pi session.
+- New continuations and continuation guidance are available only while the task cwd resolves `enable_continue: true`.
 - Effective continuation mode resolves once as `input.mode ?? previous_task.effective_mode ?? previous_task.mode ?? config.default_mode ?? "task"`.
 - `mode: "task"` waits, renders `(task)`, and remains eligible for manual `ctrl+h` handoff.
 - `mode: "background"` returns immediately, renders `(background)`, and relies on the automatic completion notification.

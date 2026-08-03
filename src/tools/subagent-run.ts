@@ -34,8 +34,8 @@ export function createSubagentRunTool(manager: SubagentManager, pi: any) {
   return {
     name: 'subagent_run',
     label: 'Subagent Run',
-    description: 'Delegate a task to one or more markdown-defined subagents. Use mode=task to wait; use mode=background to free the chat and wait for the automatic completion notification.',
-    promptSnippet: 'Delegate analysis/review/test/design tasks to subagents. Supports one or many agents, task or background mode.',
+    description: 'Delegate a task to one or more markdown-defined subagents. Always omit mode unless the user explicitly requested task or background; the manager will choose automatically. Use mode=task to wait or mode=background to free the chat and wait for the automatic completion notification when the user explicitly asked for that behavior.',
+    promptSnippet: 'Delegate analysis/review/test/design tasks to subagents. Always omit mode unless the user explicitly requested task or background; the manager chooses automatically when mode is omitted.',
     parameters: Type.Object({
       agent: Type.Optional(Type.String()),
       agents: Type.Optional(Type.Array(Type.String())),
@@ -88,17 +88,18 @@ export function createSubagentRunTool(manager: SubagentManager, pi: any) {
         const failedTasks = (result.results ?? []).filter((task) => task.status === 'failed' || task.status === 'cancelled');
         const text = result.mode === 'background'
           ? backgroundLaunchContent(result.task_ids, 'Started')
-          : formatTaskModeContent(result.results ?? []);
+          : formatTaskModeContent(result.results ?? [], ctx?.cwd ?? process.cwd());
         const details = compactResultDetails(result as any);
         const failureText = appendSubagentResumeGuidance(
           `${failedTasks.length} subagent task(s) failed or were cancelled.\n\n${failedTasks.map(formatTask).join('\n\n')}`,
           failedTasks,
+          ctx?.cwd ?? process.cwd(),
         );
         return failedTasks.length ? { ...fail(failureText), details } : ok(text, details);
       } catch (e) {
         if (!cancelledByDoubleEscape) return fail(e);
         const message = e instanceof Error ? e.message : String(e);
-        return fail(appendSubagentResumeGuidance(message, latestTasks.length ? latestTasks : [{ status: 'cancelled' }]));
+        return fail(appendSubagentResumeGuidance(message, latestTasks.length ? latestTasks : [{ status: 'cancelled' }], ctx?.cwd ?? process.cwd()));
       }
       finally {
         active = false;

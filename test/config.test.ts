@@ -139,6 +139,27 @@ describe('config and workflow loading', () => {
     });
   });
 
+  it('loads enable_continue through the global/project config cascade with a default of false', () => {
+    expect(readSubagentsConfig(tmp).enable_continue).toBe(false);
+
+    const agentDir = path.join(tmp, 'global-agent');
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(path.join(agentDir, 'subagents.json'), JSON.stringify({ enable_continue: true }));
+
+    withAgentDir(agentDir, () => {
+      expect(readSubagentsConfig(tmp).enable_continue).toBe(true);
+
+      fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ default_mode: 'task' }));
+      expect(readSubagentsConfig(tmp).enable_continue).toBe(true);
+
+      fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ enable_continue: false }));
+      expect(readSubagentsConfig(tmp).enable_continue).toBe(false);
+
+      fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ enable_continue: true }));
+      expect(readSubagentsConfig(tmp).enable_continue).toBe(true);
+    });
+  });
+
   it('rejects invalid subagent_mode values and defaults omitted definitions to task', () => {
     fs.writeFileSync(path.join(tmp, '.pi', 'subagents', 'analyst.md'), `---\nname: analyst\ndescription: analyst agent\nsubagent_mode: background\ntools:\n  - read\n---\n# Agent`);
     fs.writeFileSync(path.join(tmp, '.pi', 'subagents', 'reviewer.md'), `---\nname: reviewer\ndescription: reviewer agent\ntools:\n  - read\n---\n# Agent`);

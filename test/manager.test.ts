@@ -269,9 +269,9 @@ describe('manager and history integration', () => {
 
   it('waits for timed-out runner cleanup before continuing the same task id', async () => {
     writeAgent('analyst');
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ enable_continue: true, timeout_ms: 20 }));
     const nestedSessionPath = path.join(tmp, 'timeout-session.jsonl');
     fs.writeFileSync(nestedSessionPath, '{"type":"session"}\n');
-    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ timeout_ms: 20 }));
     let allowCleanup = false;
     let cleanupFinished = false;
     let reopenedBeforeCleanup = false;
@@ -321,11 +321,38 @@ describe('manager and history integration', () => {
     expect(runner).toHaveBeenCalledTimes(2);
   });
 
+  it('rejects disabled direct continuation attempts with a generic non-resume error', async () => {
+    writeAgent('analyst');
+    const nestedSessionPath = path.join(tmp, 'disabled-continue-session.jsonl');
+    fs.writeFileSync(nestedSessionPath, '{"type":"session"}\n');
+    const manager = new SubagentManager(async ({ continuation, nested_session_path, onActivity }) => {
+      onActivity?.({ message: 'nested session ready', nested_session_path: nestedSessionPath } as any);
+      return {
+        result: continuation ? `continued: ${continuation.prompt}` : 'initial result',
+        model: 'mock/model',
+        fallback_used: false,
+        nested_session_path: nested_session_path ?? nestedSessionPath,
+      } as any;
+    });
+
+    const first = await manager.run({ agent: 'analyst', task: 'initial task', mode: 'task' }, { cwd: tmp });
+    const error = await manager.continueTask({ task_id: first.task_ids[0]!, prompt: 'Resume anyway.' }, { cwd: tmp }).then(
+      () => undefined,
+      (value) => value,
+    );
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toBe('Subagent task is not available.');
+    expect(error.message.toLowerCase()).not.toContain('resume');
+    expect(error.message).not.toContain('subagent_continue');
+    expect(manager.getTask(first.task_ids[0]!, tmp)).toMatchObject({ attempt: 1, status: 'completed', result: 'initial result' });
+  });
+
   it('resolves continuation mode from explicit override, previous effective mode, and config fallback', async () => {
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ enable_continue: true, default_mode: 'background' }));
     writeAgent('analyst');
     const nestedSessionPath = path.join(tmp, 'continue-effective-mode-session.jsonl');
     fs.writeFileSync(nestedSessionPath, '{"type":"session"}\n');
-    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ default_mode: 'background' }));
     let releaseBackgroundContinuation: (() => void) | undefined;
     const manager = new SubagentManager(async ({ continuation, nested_session_path, onActivity }) => {
       onActivity?.({ message: 'nested session ready', nested_session_path: nestedSessionPath } as any);
@@ -654,6 +681,7 @@ describe('manager and history integration', () => {
 
   it('waits for cancelled runner cleanup before continuing the same nested session', async () => {
     writeAgent('analyst');
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ enable_continue: true }));
     const nestedSessionPath = path.join(tmp, 'cancel-session.jsonl');
     fs.writeFileSync(nestedSessionPath, '{"type":"session"}\n');
     let allowCleanup = false;
@@ -1299,6 +1327,7 @@ describe('manager and history integration', () => {
 
   it('moves a continued stable task to the front of activity-ordered listings, including after history reload', async () => {
     writeAgent('analyst');
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ enable_continue: true }));
     const runner: SubagentRunner = async ({ taskId, task, continuation, nested_session_path, onActivity }) => {
       const sessionPath = nested_session_path ?? path.join(tmp, `${taskId}.jsonl`);
       if (!fs.existsSync(sessionPath)) fs.writeFileSync(sessionPath, '{"type":"session"}\n');
@@ -1501,6 +1530,7 @@ describe('manager and history integration', () => {
 
   it('continues a completed task under the same task id, reuses the nested session, and persists attempts across reloads', async () => {
     writeAgent('analyst');
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ enable_continue: true, model_profiles: { analyst: { model: 'profile/default', effort: 'medium' } } }));
     const nestedSessionPath = path.join(tmp, 'nested-session.jsonl');
     fs.writeFileSync(nestedSessionPath, '{"type":"session"}\n');
     const runner = vi.fn<SubagentRunner>(async ({ effectiveProfile, nested_session_path, continuation, onActivity }) => {
@@ -1519,7 +1549,6 @@ describe('manager and history integration', () => {
         nested_session_path: nestedSessionPath,
       } as any;
     });
-    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ model_profiles: { analyst: { model: 'profile/default', effort: 'medium' } } }));
     const manager = new SubagentManager(runner);
 
     const initial = await manager.run({ agent: 'analyst', task: 'initial delegated work', mode: 'task' }, { cwd: tmp });
@@ -1553,6 +1582,7 @@ describe('manager and history integration', () => {
   });
 
   it('rebinds continuation ownership per attempt without replaying prior authorization', async () => {
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ enable_continue: true }));
     fs.writeFileSync(path.join(tmp, '.pi', 'subagents', 'backgrounder.md'), `---\nname: backgrounder\ndescription: background agent\nsubagent_mode: background\ntools:\n  - read\n---\n# Agent`);
 
     const releases = new Map<number, () => void>();
@@ -1596,6 +1626,7 @@ describe('manager and history integration', () => {
 
   it('re-resolves configured profiles for continuation overrides without mutating project config and rejects non-terminal continuations', async () => {
     writeAgent('analyst');
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ enable_continue: true }));
     const nestedSessionPath = path.join(tmp, 'resume-session.jsonl');
     fs.writeFileSync(nestedSessionPath, '{"type":"session"}\n');
     const runner = vi.fn<SubagentRunner>(async ({ effectiveProfile, nested_session_path, continuation, signal }) => {
@@ -1616,7 +1647,7 @@ describe('manager and history integration', () => {
         nested_session_path: nested_session_path,
       } as any;
     });
-    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ model_profiles: { analyst: { model: 'profile/after', effort: 'high' } } }));
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ enable_continue: true, model_profiles: { analyst: { model: 'profile/after', effort: 'high' } } }));
     const manager = new SubagentManager(runner);
 
     const initial = await manager.run({ agent: 'analyst', task: 'first pass', mode: 'task' }, { cwd: tmp });
