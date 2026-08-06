@@ -277,6 +277,7 @@ describe('config and workflow loading', () => {
       model_profiles: {
         analyst: { model: 'anthropic/claude-sonnet-4-5', effort: 'high' },
         reviewer: { model: 'openai/gpt-5.2', effort: 'low' },
+        maxEffort: { model: 'openai/gpt-5.2', effort: 'max' },
         invalidEffort: { model: 'openai/gpt-5.2', effort: 'extreme' },
         invalidModel: { model: 'missing-provider', effort: 'low' },
       },
@@ -293,6 +294,7 @@ describe('config and workflow loading', () => {
     expect(config.model_profiles).toEqual({
       analyst: { model: { provider: 'openai', id: 'gpt-5.2-codex' }, effort: 'medium' },
       reviewer: { model: { provider: 'openai', id: 'gpt-5.2' }, effort: 'low' },
+      maxeffort: { model: { provider: 'openai', id: 'gpt-5.2' }, effort: 'max' },
       invalideffort: { model: { provider: 'openai', id: 'gpt-5.2' } },
       invalidmodel: { effort: 'low' },
       projectonly: { model: { provider: 'anthropic', id: 'claude-opus-4-5' }, effort: 'xhigh' },

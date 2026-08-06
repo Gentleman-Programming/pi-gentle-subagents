@@ -4,7 +4,7 @@ export type SubagentMode = 'task' | 'background';
 export type SubagentStatus = 'queued' | 'running' | 'stopping' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 
 export type ModelRef = { provider: string; id: string };
-export type ThinkingEffort = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+export type ThinkingEffort = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export type SubagentModelProfile = {
   model?: ModelRef;
