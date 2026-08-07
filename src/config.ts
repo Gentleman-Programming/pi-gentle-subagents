@@ -137,7 +137,7 @@ export function parseModel(value: any): ModelRef | undefined {
   return undefined;
 }
 
-const THINKING_EFFORTS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+const THINKING_EFFORTS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 
 export function parseEffort(value: any): ThinkingEffort | undefined {
   if (!value || value === 'default') return undefined;
