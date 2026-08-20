@@ -16,6 +16,18 @@ type Db = {
   };
 };
 
+type DbConstructor = new (file: string) => Db;
+
+function loadDbConstructor(): DbConstructor {
+  try {
+    const { DatabaseSync } = require('node:sqlite') as { DatabaseSync?: DbConstructor };
+    if (DatabaseSync) return DatabaseSync;
+  } catch {}
+  const { Database } = require('bun:sqlite') as { Database?: DbConstructor };
+  if (Database) return Database;
+  throw new Error('No supported sqlite runtime is available. Expected node:sqlite or bun:sqlite.');
+}
+
 export function resolveSubagentsHistoryHome(env: NodeJS.ProcessEnv = process.env): string {
   if (env.PI_SUBAGENTS_HISTORY_HOME) return path.resolve(env.PI_SUBAGENTS_HISTORY_HOME);
   const xdg = env.XDG_DATA_HOME;
@@ -235,8 +247,8 @@ export class SubagentHistoryStore {
     if (existing) return existing;
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
     try { fs.chmodSync(path.dirname(file), 0o700); } catch {}
-    const { DatabaseSync } = require('node:sqlite') as any;
-    const db = new DatabaseSync(file) as Db;
+    const Database = loadDbConstructor();
+    const db = new Database(file) as Db;
     try { fs.chmodSync(file, 0o600); } catch {}
     configureHistoryDb(db);
     db.exec(`
