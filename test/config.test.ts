@@ -5,6 +5,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import extension, { ClaudeBackgroundWidget, ClaudeBackgroundWidgetState, completionMessage, createSubagentsPanelKeyMatcher, moveClaudeBackgroundWidgetSelection, renderClaudeBackgroundWidgetLines, resolveRegisteredToolDefinition, sendSubagentCompletionMessage } from '../index.js';
 import { loadSubagents, parseFrontmatter, readSubagentsConfig, resetGlobalSubagentModelProfileField, saveGlobalSubagentModelProfile, subagentSourceWarnings } from '../src/config.js';
+import { expandToolPatterns, matchesToolPattern } from '../src/tool-patterns.js';
 import { resolveEffectiveSubagentProfile } from '../src/profile-resolver.js';
 import { buildPrompt, ThreadSnapshotBuilder } from '../src/runner.js';
 import { SubagentStructuredError, deriveErrorString, normalizeErrorMetadata, parseErrorMetadata, safeErrorMetadataDetails, serializeErrorMetadata } from '../src/error-metadata.js';
@@ -401,6 +402,18 @@ describe('config and workflow loading', () => {
     fs.writeFileSync(path.join(tmp, '.pi', 'subagents', 'sdd-explore.md'), `---\nname: sdd-explore\ntools:\n  - read\n  - memory_search\n  - memory_get\n  - memory_add\n  - memory_update\n  - subagent_run\n---\n# SDD Explore`);
     const agents = loadSubagents(tmp);
     expect(agents[0].tools).toEqual(['read', 'memory_search', 'memory_get', 'memory_add', 'memory_update']);
+  });
+
+  it('keeps wildcard entries in config and expands them only against active tools', () => {
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents', 'worker.md'), `---\nname: worker\ntools: tool_*, read, subagent_*\n---\n# Worker`);
+    fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ default_tools: ['context7_*', 'read'] }));
+
+    expect(loadSubagents(tmp).find((agent) => agent.name === 'worker')?.tools).toEqual(['tool_*', 'read']);
+    expect(readSubagentsConfig(tmp).default_tools).toEqual(['context7_*', 'read']);
+    expect(expandToolPatterns(['tool_*', 'read', 'subagent_*'], ['tool_lookup', 'tool_write', 'subagent_run', 'read'])).toEqual(['tool_lookup', 'tool_write', 'read']);
+    expect(expandToolPatterns(['tool_*'], ['read'])).toEqual([]);
+    expect(matchesToolPattern('tool_lookup', 'tool_*')).toBe(true);
+    expect(matchesToolPattern('tool_lookup', 'tool_?')).toBe(false);
   });
 
   it('keeps orchestrator context in the delegated user prompt when supplied', () => {

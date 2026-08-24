@@ -8,6 +8,7 @@ import { getInteractionSessionRegistry } from './interaction-session-registry.js
 import { detectPiRuntimeSupport, loadPiSdkModule } from './pi-sdk-module.js';
 import { buildPrompt } from './prompt.js';
 import { promptWithInactivity, structuredMetadataFromError } from './event-processing.js';
+import { expandToolPatterns } from '../tool-patterns.js';
 
 function modelLabel(model: any): string | undefined {
   if (!model) return undefined;
@@ -21,6 +22,19 @@ function modelRefLabel(ref: ModelRef | undefined): string | undefined {
 function resolveModel(ctx: any, ref?: ModelRef): any | undefined {
   if (!ref) return undefined;
   return ctx?.modelRuntime?.getModel?.(ref.provider, ref.id) ?? ctx?.modelRegistry?.find?.(ref.provider, ref.id);
+}
+
+function activeToolNames(ctx: any): string[] | undefined {
+  for (const source of [ctx?.pi, ctx]) {
+    try {
+      const tools = source?.getTools?.();
+      if (!Array.isArray(tools)) continue;
+      return tools
+        .map((tool: unknown) => typeof tool === 'string' ? tool : (tool as { name?: unknown })?.name)
+        .filter((name: unknown): name is string => typeof name === 'string' && name.length > 0);
+    } catch {}
+  }
+  return undefined;
 }
 
 const SUBAGENT_ALLOWED_EXTENSION_EVENTS = new Set(['tool_call', 'tool_result', 'user_bash']);
@@ -212,7 +226,8 @@ export const sdkSubagentRunner: SubagentRunner = async ({ definition, task, task
   const profile = effectiveProfile ?? resolveEffectiveSubagentProfile({ agentName: definition.name, definition, config, ctx });
   const preferred = selectedModel({ ctx, definition, profile });
   const effort = profile.effort.value;
-  const tools = definition.tools?.length ? definition.tools : config.default_tools;
+  const configuredTools = definition.tools?.length ? definition.tools : config.default_tools;
+  const tools = expandToolPatterns(configuredTools, activeToolNames(ctx));
   const systemPrompt = definition.instructions;
   const prompt = continuation?.prompt ?? buildPrompt(definition, task, context, tools);
   onActivity?.({

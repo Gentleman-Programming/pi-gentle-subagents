@@ -588,6 +588,67 @@ describe('subagent runner interaction-required bridge', () => {
     expect(result.effort).toBe('high');
   });
 
+  it('expands wildcard tool patterns from active parent-session tools only', async () => {
+    vi.resetModules();
+    const session = {
+      subscribe: vi.fn(() => vi.fn()),
+      prompt: vi.fn(async () => undefined),
+      messages: [{ role: 'assistant', content: 'done' }],
+      dispose: vi.fn(async () => undefined),
+    };
+    const createAgentSession = vi.fn(() => ({ session }));
+    const getTools = vi.fn(() => [{ name: 'read' }, { name: 'tool_lookup' }, { name: 'tool_write' }]);
+    const getAllTools = vi.fn(() => [{ name: 'read' }, { name: 'tool_lookup' }, { name: 'tool_write' }, { name: 'tool_hidden' }]);
+
+    vi.doMock('@earendil-works/pi-coding-agent', () => ({
+      SessionManager: { inMemory: () => ({}) },
+      createAgentSession,
+    }));
+
+    const { sdkSubagentRunner } = await import('../../src/runner.js');
+    await sdkSubagentRunner({
+      definition: { name: 'tool-user', description: 'tool user', filePath: '/tmp/tool-user.md', instructions: 'return a concise result', tools: ['tool_*', 'read'] },
+      task: 'use tools',
+      cwd: '/workspace',
+      ctx: { model: { provider: 'test', id: 'model' }, pi: { getTools, getAllTools } },
+      config: { timeout_ms: 10_000, stall_timeout_ms: 10_000, max_concurrency: 1, default_tools: ['read'], model_profiles: {} },
+      signal: new AbortController().signal,
+    } as any);
+
+    expect(getTools).toHaveBeenCalledTimes(1);
+    expect(getAllTools).not.toHaveBeenCalled();
+    expect(createAgentSession).toHaveBeenCalledWith(expect.objectContaining({ tools: ['tool_lookup', 'tool_write', 'read'] }));
+  });
+
+  it('expands wildcard patterns from default_tools using the active parent-session tools', async () => {
+    vi.resetModules();
+    const session = {
+      subscribe: vi.fn(() => vi.fn()),
+      prompt: vi.fn(async () => undefined),
+      messages: [{ role: 'assistant', content: 'done' }],
+      dispose: vi.fn(async () => undefined),
+    };
+    const createAgentSession = vi.fn(() => ({ session }));
+    const getTools = vi.fn(() => ['read', 'tool_lookup']);
+
+    vi.doMock('@earendil-works/pi-coding-agent', () => ({
+      SessionManager: { inMemory: () => ({}) },
+      createAgentSession,
+    }));
+
+    const { sdkSubagentRunner } = await import('../../src/runner.js');
+    await sdkSubagentRunner({
+      definition: { name: 'tool-user', description: 'tool user', filePath: '/tmp/tool-user.md', instructions: 'return a concise result', tools: [] },
+      task: 'use tools',
+      cwd: '/workspace',
+      ctx: { model: { provider: 'test', id: 'model' }, pi: { getTools } },
+      config: { timeout_ms: 10_000, stall_timeout_ms: 10_000, max_concurrency: 1, default_tools: ['tool_*', 'read'], model_profiles: {} },
+      signal: new AbortController().signal,
+    } as any);
+
+    expect(createAgentSession).toHaveBeenCalledWith(expect.objectContaining({ tools: ['tool_lookup', 'read'] }));
+  });
+
   it('detects supported and unsupported Pi versions from the loaded SDK version export', async () => {
     const { detectPiRuntimeSupport } = await import('../../src/runner/pi-sdk-module.js');
 
