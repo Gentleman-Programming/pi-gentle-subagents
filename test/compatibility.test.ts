@@ -19,21 +19,41 @@ import * as toolsModule from '../src/tools.js';
 import * as typesModule from '../src/types.js';
 import * as uiModule from '../src/ui.js';
 
-async function withIndependentConfig(callback: () => void): Promise<void> {
+async function withIsolatedSubagentsConfig(
+  callback: (workspaceDir: string) => void | Promise<void>,
+  options: { globalConfig?: Record<string, unknown>; projectConfig?: Record<string, unknown> } = {},
+): Promise<void> {
   const fs = await import('node:fs');
   const os = await import('node:os');
   const path = await import('node:path');
-  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-subagents-compat-config-'));
-  const configPath = path.join(configDir, 'subagents.json');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-subagents-compat-'));
+  const agentDir = path.join(root, 'agent');
+  const workspaceDir = path.join(root, 'workspace');
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-  fs.writeFileSync(configPath, JSON.stringify({ enable_continue: false }));
-  process.env.PI_CODING_AGENT_DIR = configDir;
+  const previousCwd = process.cwd();
+
+  fs.mkdirSync(agentDir, { recursive: true });
+  fs.mkdirSync(workspaceDir, { recursive: true });
+
+  if (options.globalConfig) {
+    fs.writeFileSync(path.join(agentDir, 'subagents.json'), JSON.stringify(options.globalConfig));
+  }
+
+  if (options.projectConfig) {
+    fs.mkdirSync(path.join(workspaceDir, '.pi'), { recursive: true });
+    fs.writeFileSync(path.join(workspaceDir, '.pi', 'subagents.json'), JSON.stringify(options.projectConfig));
+  }
+
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  process.chdir(workspaceDir);
+
   try {
-    callback();
+    await callback(workspaceDir);
   } finally {
+    process.chdir(previousCwd);
     if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-    fs.rmSync(configDir, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true });
   }
 }
 
@@ -52,7 +72,7 @@ describe('compatibility smoke', () => {
   });
 
   it('preserves extension registration order and contract names with continuation disabled by default', async () => {
-    await withIndependentConfig(() => {
+    await withIsolatedSubagentsConfig(() => {
       const calls: string[] = [];
       const shortcuts: string[] = [];
       const commands: string[] = [];
@@ -85,15 +105,7 @@ describe('compatibility smoke', () => {
   });
 
   it('restores subagent_continue registration when continuation is explicitly enabled before extension initialization', async () => {
-    const fs = await import('node:fs');
-    const os = await import('node:os');
-    const path = await import('node:path');
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-subagents-compat-'));
-    const previousCwd = process.cwd();
-    process.chdir(tmp);
-    try {
-      fs.mkdirSync(path.join(tmp, '.pi'), { recursive: true });
-      fs.writeFileSync(path.join(tmp, '.pi', 'subagents.json'), JSON.stringify({ enable_continue: true }));
+    await withIsolatedSubagentsConfig(() => {
       const tools: string[] = [];
       extension({
         registerMessageRenderer: () => undefined,
@@ -103,9 +115,6 @@ describe('compatibility smoke', () => {
         registerCommand: () => undefined,
       });
       expect(tools).toContain('subagent_continue');
-    } finally {
-      process.chdir(previousCwd);
-      fs.rmSync(tmp, { recursive: true, force: true });
-    }
+    }, { projectConfig: { enable_continue: true } });
   });
 });
