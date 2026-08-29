@@ -39,10 +39,12 @@
 		"outsideWorkspaceFilesystem": "ask",
 		"envSecretExposure": "deny",
 		"safeCommands": [
-			"regex:^npm\\s+run\\s+typecheck(?:\\s+--\\s+.*)?$",
-			"regex:^npm\\s+test(?:\\s+.*)?$",
-			"npm run pack:dry-run",
-			"npx vitest run test/runner.test.ts -t \"fails stalled tool sessions\""
+			"regex:^pnpm\\s+(?:run\\s+)?typecheck(?:\\s+--\\s+.*)?$",
+			"regex:^pnpm\\s+test(?:\\s+.*)?$",
+			"pnpm check",
+			"pnpm pack:dry-run",
+			"pnpm install --frozen-lockfile",
+			"pnpm exec vitest run test/runner.test.ts -t \"fails stalled tool sessions\""
 		],
 		"scopedApprovals": [
 			{
@@ -70,7 +72,7 @@
 			"cp *",
 			"git clean *",
 			"git reset *",
-			"npm install *",
+			"pnpm install *",
 			"pnpm add *",
 			"pip install *"
 		],

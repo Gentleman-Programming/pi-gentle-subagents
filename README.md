@@ -594,31 +594,31 @@ Subagent definitions are intentionally user/project configuration, not hard-code
 Install dependencies once:
 
 ```bash
-npm install
+pnpm install --frozen-lockfile
 ```
 
 Run tests:
 
 ```bash
-npm test
+pnpm test
 ```
 
 Run typecheck:
 
 ```bash
-npm run typecheck
+pnpm typecheck
 ```
 
 Verify the npm package contents:
 
 ```bash
-npm run pack:dry-run
+pnpm pack:dry-run
 ```
 
 Run the full local check:
 
 ```bash
-npm run check
+pnpm check
 ```
 
 ## Related project docs

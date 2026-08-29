@@ -25,8 +25,8 @@ Select one and add the matching PR label.
 
 ## Test plan
 
-- [ ] `npm run check`
-- [ ] `npm run pack:dry-run` (when package contents change)
+- [ ] `pnpm check`
+- [ ] `pnpm pack:dry-run` (when package contents change)
 - [ ] Added or updated tests where behavior changed
 
 ## Contributor checklist

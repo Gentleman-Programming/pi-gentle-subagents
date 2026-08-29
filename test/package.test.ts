@@ -7,6 +7,7 @@ const packageJson = JSON.parse(fs.readFileSync(fileURLToPath(new URL('../package
 describe('pi package manifest', () => {
   it('has the canonical public npm package identity and metadata', () => {
     expect(packageJson.name).toBe('pi-gentle-subagents');
+    expect(packageJson.packageManager).toBe('pnpm@11.1.1');
     expect(packageJson.private).not.toBe(true);
     expect(packageJson.license).toBe('MIT');
     expect(packageJson.repository).toEqual({
