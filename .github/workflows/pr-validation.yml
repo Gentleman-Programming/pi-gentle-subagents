@@ -1,0 +1,57 @@
+name: PR validation
+
+on:
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize, labeled, unlabeled]
+
+permissions:
+  issues: read
+
+jobs:
+  validate:
+    name: Validate PR metadata
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate branch, issue, and labels
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const errors = [];
+            const branchPattern = /^(feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert)\/[a-z0-9._-]+$/;
+
+            if (!branchPattern.test(pr.head.ref)) {
+              errors.push(`Branch '${pr.head.ref}' does not match the required naming convention.`);
+            }
+
+            const issueMatch = pr.body?.match(/\b(?:closes|fixes|resolves)\s+#(\d+)\b/i);
+            if (!issueMatch) {
+              errors.push("PR body must include Closes #<issue-number>, Fixes #<issue-number>, or Resolves #<issue-number>.");
+            } else {
+              const { data: issue } = await github.rest.issues.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: Number(issueMatch[1]),
+              });
+              if (issue.pull_request) {
+                errors.push(`Linked reference #${issue.number} must be an issue, not a pull request.`);
+              } else {
+                const issueLabels = issue.labels.map((label) =>
+                  typeof label === "string" ? label : label.name,
+                );
+                if (!issueLabels.includes("status:approved")) {
+                  errors.push(`Linked issue #${issue.number} must have the status:approved label.`);
+                }
+              }
+            }
+
+            const typeLabels = pr.labels
+              .map((label) => label.name)
+              .filter((label) => label.startsWith("type:"));
+            if (typeLabels.length !== 1) {
+              errors.push(`PR must have exactly one type:* label; found ${typeLabels.length}.`);
+            }
+
+            if (errors.length > 0) {
+              core.setFailed(errors.join("\n"));
+            }
