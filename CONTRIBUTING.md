@@ -27,12 +27,12 @@ Valid types are `build`, `chore`, `ci`, `docs`, `feat`, `fix`, `perf`, `refactor
 ## Local verification
 
 ```bash
-npm ci
-npm run check
-npm run pack:dry-run
+pnpm install --frozen-lockfile
+pnpm check
+pnpm pack:dry-run
 ```
 
-`npm run check` runs TypeScript checking, tests, and package-file validation.
+`pnpm check` runs TypeScript checking, tests, and package-file validation.
 
 ## Releases
 

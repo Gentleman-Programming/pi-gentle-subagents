@@ -1,6 +1,7 @@
 {
   "name": "pi-gentle-subagents",
   "version": "1.0.0",
+  "packageManager": "pnpm@11.1.1",
   "description": "Installable Pi package that adds markdown-defined subagents, delegated task tools, history, and model profiles.",
   "type": "module",
   "license": "MIT",
@@ -49,10 +50,10 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "verify:package": "node scripts/verify-package-files.mjs",
-    "pack:dry-run": "npm pack --dry-run",
-    "check": "npm run typecheck && npm test && npm run verify:package",
+    "pack:dry-run": "pnpm pack --dry-run",
+    "check": "pnpm run typecheck && pnpm test && pnpm run verify:package",
     "release": "semantic-release",
-    "prepublishOnly": "npm run check"
+    "prepublishOnly": "pnpm run check"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
