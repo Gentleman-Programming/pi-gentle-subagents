@@ -1,0 +1,26 @@
+name: Feature request
+description: Propose an improvement with a clear outcome.
+title: "feat: "
+labels: ["status:needs-review", "type:feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the problem first, then the smallest useful outcome.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Proposed outcome
+      description: Describe the expected behavior, not only an implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
