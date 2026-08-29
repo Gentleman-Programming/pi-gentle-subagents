@@ -1,4 +1,4 @@
-# Pi Subagents Extension
+# Pi Gentle Subagents
 
 Pi extension for delegating work to markdown-defined subagents. Continuation is unavailable by default: `subagent_continue` is exposed only when effective `enable_continue` is explicitly `true`. The extension registers tools for the orchestrator, runs subagents in isolated in-memory Pi sessions, tracks task history, provides a TUI history panel, and supports per-subagent model/thinking-effort profiles.
 
@@ -23,31 +23,43 @@ Pi extension for delegating work to markdown-defined subagents. Continuation is 
 
 ## Install as a Pi package
 
-This repository is an installable Pi package named `pi-subagents-j0k3r`.
+This repository is an installable Pi package named `pi-gentle-subagents`.
 
-Install from npm after publishing:
+Install from npm after publication:
 
 ```bash
-pi install npm:pi-subagents-j0k3r
+pi install npm:pi-gentle-subagents
 ```
 
-Install from a Git repository or tag:
+Before publication, install the current Git repository or tag:
 
 ```bash
-pi install git:https://github.com/<owner>/pi-subagents-j0k3r@<tag-or-commit>
+pi install git:https://github.com/Gentleman-Programming/pi-gentle-subagents.git@<tag-or-commit>
 ```
 
 Try a local checkout without installing it permanently:
 
 ```bash
-pi -e ./path/to/pi-subagents-j0k3r
+pi -e ./path/to/pi-gentle-subagents
 ```
 
 Install for one project instead of globally with `-l`:
 
 ```bash
-pi install -l npm:pi-subagents-j0k3r
+pi install -l npm:pi-gentle-subagents
 ```
+
+### Package settings and migration
+
+Configure the published package in `~/.pi/agent/settings.json`:
+
+```json
+{
+  "packages": ["npm:pi-gentle-subagents"]
+}
+```
+
+To migrate an existing setting, replace `npm:pi-subagents-j0k3r` with `npm:pi-gentle-subagents`. Until the package is published, use the Git installation above instead.
 
 The package manifest exposes:
 
@@ -79,7 +91,7 @@ Load order:
 
 Project definitions override global definitions with the same normalized name. Within the same scope, `subagents` definitions override `agents` definitions with the same normalized name and Pi shows a startup warning so the duplicate can be cleaned up.
 
-The npm package is the extension runtime only. It does not ship or load subagent definitions from `node_modules/pi-subagents-j0k3r/agents`; use the directories above, or run `subagent_list_agents` / `subagent({ action: "list" })` to inspect the definitions Pi actually loaded.
+The npm package is the extension runtime only. It does not ship or load subagent definitions from `node_modules/pi-gentle-subagents/agents`; use the directories above, or run `subagent_list_agents` / `subagent({ action: "list" })` to inspect the definitions Pi actually loaded.
 
 Default global agent directory:
 
@@ -575,7 +587,7 @@ This package bundles:
 - `index.ts` and `src/**` — the Pi extension runtime.
 - `skills/subagents-configuration/SKILL.md` — configuration guidance for agents that need to explain, create, or edit subagent definitions and global/project settings. It requires explicit scope selection and unresolved behavior decisions before edits.
 
-Subagent definitions are intentionally user/project configuration, not hard-coded package behavior. Add them globally in `$PI_CODING_AGENT_DIR/agents/*.md` or `$PI_CODING_AGENT_DIR/subagents/*.md`, or project-locally in `.pi/agents/*.md` or `.pi/subagents/*.md`. Do not inspect `node_modules/pi-subagents-j0k3r/agents` for definitions; that path is not part of the package design and may not exist.
+Subagent definitions are intentionally user/project configuration, not hard-coded package behavior. Add them globally in `$PI_CODING_AGENT_DIR/agents/*.md` or `$PI_CODING_AGENT_DIR/subagents/*.md`, or project-locally in `.pi/agents/*.md` or `.pi/subagents/*.md`. Do not inspect `node_modules/pi-gentle-subagents/agents` for definitions; that path is not part of the package design and may not exist.
 
 ## Development
 

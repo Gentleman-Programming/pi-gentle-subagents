@@ -104,7 +104,7 @@ Do not load this skill for ordinary subagent delegation/use (`subagent_run`, tas
 - For SDD/PRD phase agents, prefer deterministic active-flow memory tools only: `memory_search`, `memory_get`, `memory_add`, and `memory_update`; avoid `memory_context` and `memory_recall` in subagent allowlists unless there is a specific reviewed need.
 - For SDD phase agents, memory write tools may be allowed only for active SDD flow memory/artifacts according to `sdd-workflow`.
 - Project subagent definitions live in `.pi/agents/*.md` and `.pi/subagents/*.md`; global user definitions live in `$PI_CODING_AGENT_DIR/agents/*.md`, `$PI_CODING_AGENT_DIR/subagents/*.md`, `~/.pi/agent/agents/*.md`, or `~/.pi/agent/subagents/*.md`.
-- The npm package is the extension runtime only; do not tell users or future agents to inspect `node_modules/pi-subagents-j0k3r/agents` for subagent definitions. Use the real global/project definition directories above, or runtime listing via `subagent_list_agents` / `subagent({ action: "list" })`.
+- The npm package is the extension runtime only; do not tell users or future agents to inspect `node_modules/pi-gentle-subagents/agents` for subagent definitions. Use the real global/project definition directories above, or runtime listing via `subagent_list_agents` / `subagent({ action: "list" })`.
 - Project definitions override global definitions with the same normalized name. Within the same scope, definitions in `subagents` override definitions in `agents` with the same normalized name, and Pi should warn at session startup so users can clean up the duplicate.
 - Before proposing or editing configuration, ask which scope the user wants unless it is already explicit: global for every project, project-local for the current workspace, or definition-specific frontmatter. Do not infer configuration scope from where the npm package is installed.
 - Explain the consequence before the user chooses: global config supplies defaults to all projects, project config overrides only fields present locally and inherits missing fields globally, and definition frontmatter affects only that subagent.
@@ -119,7 +119,7 @@ Do not load this skill for ordinary subagent delegation/use (`subagent_run`, tas
 - In lean mode, extensions are loaded for allowlisted tools and tool-safety hooks only; prompt/context lifecycle hooks such as `before_agent_start` and `context` must not inject hidden messages into subagent turns.
 - Subagent task history is stored globally under data storage, but rows remain project-scoped by `cwd`; history stores delegated prompt and subagent system prompt separately.
 - Debug logging is disabled by default with `debug: false`; when enabled in global or project `subagents.json`, logs are written to the executing project's `cwd/.pi/subagents-debug.log`.
-- To install the published package globally, prefer `pi install npm:pi-subagents-j0k3r`. If the user wants future `pi update --extensions` / `pi update --all` to move to newer releases, keep the package source unpinned as `npm:pi-subagents-j0k3r` in `~/.pi/agent/settings.json`. Use `npm:pi-subagents-j0k3r@x.y.z` only when the user explicitly wants a fixed version.
+- To install the published package globally, prefer `pi install npm:pi-gentle-subagents`. If the user wants future `pi update --extensions` / `pi update --all` to move to newer releases, keep the package source unpinned as `npm:pi-gentle-subagents` in `~/.pi/agent/settings.json`. Use `npm:pi-gentle-subagents@x.y.z` only when the user explicitly wants a fixed version.
 - Runtime behavior to explain: `mode=task` waits and returns the full subagent response to the orchestrator; `mode=background` frees the chat, should not be polled just to wait, and sends an automatic completion/failure notification. `subagent_continue` is available only when effective `enable_continue` is true at extension load time, so changing that flag requires `/reload` or restart. When enabled, `subagent_continue` also accepts `mode`, and continuation mode resolves as explicit continuation `mode`, then the previous attempt's `effective_mode`, then the previous persisted `mode`, then `default_mode`, then built-in `task`. `/subagents` opens the session history/detail panel; `ctrl+o` expands/collapses rendered tool output and responses; `subagent_result` reads a stored result when explicitly needed.
 - The old UI config key `mode: "opencode" | "claude"` is removed. Do not recommend it. History, background visibility, and task-to-background handoff are available together without an UI-mode gate.
 - `subagent_send_message` is runtime behavior, not a configurable permission bypass: it only targets a running background task owned by the exact originating parent Pi session, requires supported Pi live steering, uses bounded queues, and reports queue acceptance separately from model consumption. Message text is visible only in the owning task detail timeline, not list/notification/result summary surfaces.
@@ -130,7 +130,7 @@ Recommended global package setting in `~/.pi/agent/settings.json`:
 ```json
 {
   "packages": [
-    "npm:pi-subagents-j0k3r"
+    "npm:pi-gentle-subagents"
   ]
 }
 ```
@@ -228,7 +228,7 @@ Continuation-mode resolution order (when `enable_continue` is enabled):
 
 1. Classify the request as package setup, definition creation, config defaults, per-agent profiles, shortcuts/UI, history/debug, or runtime explanation.
 2. If scope is not explicit, present the three choices and wait: global (`$PI_CODING_AGENT_DIR` or `~/.pi/agent`), project-local (`.pi`), or one definition's frontmatter. Explain the cascade before asking the user to choose.
-3. For package setup, inspect settings before editing; use `pi install npm:pi-subagents-j0k3r` when possible, or edit `~/.pi/agent/settings.json` only when the CLI is unavailable/broken. Prefer unpinned `npm:pi-subagents-j0k3r` unless the user asks for a fixed version.
+3. For package setup, inspect settings before editing; use `pi install npm:pi-gentle-subagents` when possible, or edit `~/.pi/agent/settings.json` only when the CLI is unavailable/broken. Prefer unpinned `npm:pi-gentle-subagents` unless the user asks for a fixed version.
 4. After scope is approved, read the matching existing config/definition plus the fallback config needed to explain effective values. Check optional `agents` and `subagents` directories for existence before listing them.
 5. Summarize existing effective values, what will be inherited, and exactly which file would change; ask for any missing product choice such as `task` versus `background` before editing.
 6. For new subagents, choose lowercase kebab-case names and clear trigger-focused descriptions. Write definitions in English by default; use another language only when explicitly requested. Prefer `subagents` unless compatibility requires `agents`.
