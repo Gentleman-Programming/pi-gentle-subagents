@@ -1,5 +1,5 @@
 {
-  "name": "pi-subagents-j0k3r",
+  "name": "pi-gentle-subagents",
   "version": "1.0.0",
   "description": "Installable Pi package that adds markdown-defined subagents, delegated task tools, history, and model profiles.",
   "type": "module",
@@ -7,11 +7,16 @@
   "author": "j0k3r",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/j0k3r-dev-rgl/pi-subagents-j0k3r.git"
+    "url": "git+https://github.com/Gentleman-Programming/pi-gentle-subagents.git"
+  },
+  "homepage": "https://github.com/Gentleman-Programming/pi-gentle-subagents#readme",
+  "bugs": {
+    "url": "https://github.com/Gentleman-Programming/pi-gentle-subagents/issues"
   },
   "keywords": [
     "pi-package",
     "pi-extension",
+    "pi-gentle-subagents",
     "pi",
     "subagents",
     "coding-agent",

@@ -32,10 +32,10 @@ const missing = requiredFiles.filter((relativePath) => {
 });
 
 if (missing.length > 0) {
-  console.error('pi-subagents-j0k3r package is missing required Pi resources:');
+  console.error('pi-gentle-subagents package is missing required Pi resources:');
   for (const relativePath of missing) console.error(`- ${relativePath}`);
   console.error('\nRefusing to pack/publish an incomplete npm package.');
   process.exit(1);
 }
 
-console.log(`pi-subagents-j0k3r package resource check passed (${requiredFiles.length} files).`);
+console.log(`pi-gentle-subagents package resource check passed (${requiredFiles.length} files).`);
