@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "targets": [
+    { "id": "fork", "revision": "85ec5fe42038c113ffdee4caa4cb0737e051e2d9" },
+    { "id": "upstream", "revision": "9a2b15ed9ab62d81c27d0f7bf47c4a66cc3fd174" }
+  ]
+}

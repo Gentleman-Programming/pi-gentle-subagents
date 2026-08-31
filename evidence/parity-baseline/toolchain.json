@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "node": "22.19.0",
+  "pnpm": "11.1.1",
+  "vitest": "4.1.7",
+  "piPackage": "@earendil-works/pi-coding-agent",
+  "network": "denied",
+  "inputs": "local-only",
+  "archiveFormat": "tar",
+  "archiveHash": "sha256",
+  "extraction": "read-only"
+}
