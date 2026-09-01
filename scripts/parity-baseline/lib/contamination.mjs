@@ -66,6 +66,26 @@ export function createContaminationGuard(config) {
   if (excludedRoots.some((entry, index) => excludedRoots.some((other, otherIndex) => index !== otherIndex && (entry.lexical === other.lexical || entry.physical === other.physical || below(entry.lexical, other.lexical) || below(other.lexical, entry.lexical) || below(entry.physical, other.physical) || below(other.physical, entry.physical))))) fail('invalid contamination policy');
   const policy = frozen({ repositoryRoot: repository.lexical, protectedRoots: protectedRoots.map((entry) => entry.lexical), excludedRoots: excludedRoots.map((entry) => entry.lexical), externalRoots: externalRoots.map((entry) => entry.lexical) });
   const brands = new WeakSet();
+  const copy = (value) => frozen(value);
+  const compareEntries = (area, before, after, identity) => {
+    const left = new Map(before.map((entry) => [identity(entry), entry])); const right = new Map(after.map((entry) => [identity(entry), entry]));
+    return [...new Set([...left.keys(), ...right.keys()])].map((key) => {
+      const previous = left.get(key); const next = right.get(key);
+      const change = previous === undefined ? 'added' : next === undefined ? 'removed' : JSON.stringify(previous) === JSON.stringify(next) ? null : 'changed';
+      return change && { area, key, change, before: previous === undefined ? null : copy(previous), after: next === undefined ? null : copy(next) };
+    }).filter(Boolean);
+  };
+  const compare = Object.freeze((before, after) => {
+    if (!brands.has(before) || !brands.has(after)) fail('invalid contamination comparison');
+    const differences = [
+      ...['status', 'index', 'refs'].map((key) => before.git[key] === after.git[key] ? null : { area: 'git', key, change: 'changed', before: before.git[key], after: after.git[key] }),
+      ...compareEntries('protected', before.protected, after.protected, (entry) => entry.path),
+      ...compareEntries('externalRoots', before.externalRoots, after.externalRoots, (entry) => entry.path),
+      ...compareEntries('processes', before.processes, after.processes, (entry) => entry.id),
+      ...compareEntries('network', before.network, after.network, (entry) => key(entry, ['target', 'channel', 'endpoint'])),
+    ].filter(Boolean).sort((left, right) => order(left.area, right.area) || order(left.key, right.key) || order(left.change, right.change));
+    return frozen({ clean: differences.length === 0, differences });
+  });
   const capture = Object.freeze(() => {
     let raw; try { raw = snapshot(policy); } catch { fail('invalid contamination snapshot'); }
     exact(raw, ['git', 'protected', 'externalRoots', 'processes', 'network'], 'invalid contamination snapshot'); exact(raw.git, ['status', 'index', 'refs'], 'invalid contamination snapshot');
@@ -87,5 +107,5 @@ export function createContaminationGuard(config) {
     const network = inventory(raw.network, ['target', 'channel', 'endpoint'], (entry) => { if (Object.values(entry).some((value) => !text(value))) fail('invalid contamination snapshot'); });
     const result = frozen({ git: { ...raw.git }, protected: protectedEntries.filter((entry) => !entry.excluded).map(({ physical: _physical, excluded: _excluded, ...entry }) => entry), externalRoots: external.map(({ physical: _physical, ...entry }) => entry), processes: processes.map(({ physical: _physical, ...entry }) => entry), network }); brands.add(result); return result;
   });
-  return Object.freeze({ capture });
+  return Object.freeze({ capture, compare });
 }
