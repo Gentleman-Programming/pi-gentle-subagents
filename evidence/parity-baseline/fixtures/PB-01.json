@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "identity": "PB-01",
+  "fixtureId": "pb-01-local-package-lifecycle-v1",
+  "procedureId": "pb-01-local-package-lifecycle-v1",
+  "normalizationId": "pb-01-package-observation-v1",
+  "cases": [
+    {
+      "id": "local-package-lifecycle",
+      "requiredSubObservations": ["packageIdentity", "packedFiles", "entryPoints", "extensionDeclarations", "skillDeclarations", "peerDeclarations", "verificationResult", "installResult", "updateResult", "loadResult"]
+    }
+  ]
+}
