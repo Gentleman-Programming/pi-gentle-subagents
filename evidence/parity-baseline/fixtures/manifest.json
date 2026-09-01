@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "fixtures": [
+    { "identity": "PB-01", "path": "PB-01.json", "sha256": "86c48b13224da2de87e258bd6681187b73b46f147eca947ffe0aa25c613f3093" }
+  ]
+}
