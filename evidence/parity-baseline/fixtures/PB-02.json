@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "identity": "PB-02",
+  "fixtureId": "pb-02-registration-lifecycle-v1",
+  "procedureId": "pb-02-registration-lifecycle-v1",
+  "normalizationId": "pb-02-registration-observation-v1",
+  "cases": [
+    { "id": "full-capability", "absentCapability": null, "requiredSubObservations": ["tools", "commands", "warnings", "shortcuts", "messageRenderers", "sessionHandlers", "listeners", "widgets", "terminalInputListeners", "cleanup", "fallback"] },
+    { "id": "absent-message-renderer", "absentCapability": "message-renderer", "requiredSubObservations": ["tools", "commands", "warnings", "shortcuts", "messageRenderers", "sessionHandlers", "listeners", "widgets", "terminalInputListeners", "cleanup", "fallback"] },
+    { "id": "absent-shortcut", "absentCapability": "shortcut", "requiredSubObservations": ["tools", "commands", "warnings", "shortcuts", "messageRenderers", "sessionHandlers", "listeners", "widgets", "terminalInputListeners", "cleanup", "fallback"] },
+    { "id": "absent-lifecycle-listener", "absentCapability": "lifecycle-listener", "requiredSubObservations": ["tools", "commands", "warnings", "shortcuts", "messageRenderers", "sessionHandlers", "listeners", "widgets", "terminalInputListeners", "cleanup", "fallback"] },
+    { "id": "absent-widget", "absentCapability": "widget", "requiredSubObservations": ["tools", "commands", "warnings", "shortcuts", "messageRenderers", "sessionHandlers", "listeners", "widgets", "terminalInputListeners", "cleanup", "fallback"] },
+    { "id": "absent-terminal-input", "absentCapability": "terminal-input", "requiredSubObservations": ["tools", "commands", "warnings", "shortcuts", "messageRenderers", "sessionHandlers", "listeners", "widgets", "terminalInputListeners", "cleanup", "fallback"] }
+  ]
+}
