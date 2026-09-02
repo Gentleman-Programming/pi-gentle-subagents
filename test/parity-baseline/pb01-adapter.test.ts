@@ -27,7 +27,7 @@ describe('PB-01 adapter', () => {
   it('owns the exact committed fixture and manifest digest', () => {
     const text = read('PB-01.json');
     expect(fixture()).toEqual({ schemaVersion: 1, identity: 'PB-01', fixtureId: 'pb-01-local-package-lifecycle-v1', procedureId: 'pb-01-local-package-lifecycle-v1', normalizationId: 'pb-01-package-observation-v1', cases: [{ id: 'local-package-lifecycle', requiredSubObservations: ['packageIdentity', 'packedFiles', 'entryPoints', 'extensionDeclarations', 'skillDeclarations', 'peerDeclarations', 'verificationResult', 'installResult', 'updateResult', 'loadResult'] }] });
-    expect(JSON.parse(read('manifest.json'))).toEqual({ schemaVersion: 1, fixtures: [{ identity: 'PB-01', path: 'PB-01.json', sha256: digest(text) }, { identity: 'PB-02', path: 'PB-02.json', sha256: digest(read('PB-02.json')) }] });
+    expect(JSON.parse(read('manifest.json'))).toEqual({ schemaVersion: 1, fixtures: [{ identity: 'PB-01', path: 'PB-01.json', sha256: digest(text) }, { identity: 'PB-02', path: 'PB-02.json', sha256: digest(read('PB-02.json')) }, { identity: 'PB-03', path: 'PB-03.json', sha256: digest(read('PB-03.json')) }] });
   });
 
   it('rejects every fixture descriptor family and cannot use caller selectors to define completeness', () => {

@@ -1,0 +1,1 @@
+{"defaultAgent":"project-agent","maxConcurrency":3,"sessionResources":{"memory":"project"},"continuation":"previous","tools":["read","write"],"shortcuts":{"p":"project"}}

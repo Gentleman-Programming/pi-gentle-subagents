@@ -32,13 +32,13 @@ const rejects = (label: string, mutate: (value: any) => void, id = ids[0]) => { 
 describe('PB-02 adapter', () => {
   it('uses the exact hyphenated PB-02 identity in fixture metadata', () => {
     expect(fixture().identity).toBe('PB-02');
-    expect(JSON.parse(read('manifest.json')).fixtures.map(({ identity }: { identity: string }) => identity)).toEqual(['PB-01', 'PB-02']);
+    expect(JSON.parse(read('manifest.json')).fixtures.map(({ identity }: { identity: string }) => identity)).toEqual(['PB-01', 'PB-02', 'PB-03']);
   });
 
   it('owns six exact fixture vectors and the PB-01 coexistence manifest', () => {
-    const pb01 = read('PB-01.json'); const pb02 = read('PB-02.json');
+    const pb01 = read('PB-01.json'); const pb02 = read('PB-02.json'); const pb03 = read('PB-03.json');
     expect(fixture()).toEqual({ schemaVersion: 1, identity: 'PB-02', fixtureId: 'pb-02-registration-lifecycle-v1', procedureId: 'pb-02-registration-lifecycle-v1', normalizationId: 'pb-02-registration-observation-v1', cases: ids.map((id) => ({ id, absentCapability: id === ids[0] ? null : id.slice(7), requiredSubObservations: fields })) });
-    expect(JSON.parse(read('manifest.json'))).toEqual({ schemaVersion: 1, fixtures: [{ identity: 'PB-01', path: 'PB-01.json', sha256: digest(pb01) }, { identity: 'PB-02', path: 'PB-02.json', sha256: digest(pb02) }] });
+    expect(JSON.parse(read('manifest.json'))).toEqual({ schemaVersion: 1, fixtures: [{ identity: 'PB-01', path: 'PB-01.json', sha256: digest(pb01) }, { identity: 'PB-02', path: 'PB-02.json', sha256: digest(pb02) }, { identity: 'PB-03', path: 'PB-03.json', sha256: digest(pb03) }] });
   });
 
   it.each(ids)('preserves every ordered observation family exactly for %s', (caseId) => {
