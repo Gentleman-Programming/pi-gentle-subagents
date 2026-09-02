@@ -1,0 +1,24 @@
+{
+ "schemaVersion":1,"eventSeedId":"pb-04-serial-foreground-events-v1","caseId":"serial-foreground","events":[
+ {"eventId":"ser-q1","tick":1,"kind":"task.queued","taskId":"ser-task-1","attemptId":"ser-attempt-1","resultId":null,"value":null,"activeAttemptIds":null,"limit":null},
+ {"eventId":"ser-q2","tick":2,"kind":"task.queued","taskId":"ser-task-2","attemptId":"ser-attempt-2","resultId":null,"value":null,"activeAttemptIds":null,"limit":null},
+ {"eventId":"ser-r1","tick":3,"kind":"task.running","taskId":"ser-task-1","attemptId":"ser-attempt-1","resultId":null,"value":null,"activeAttemptIds":null,"limit":null},
+ {"eventId":"ser-o1","tick":4,"kind":"ownership.recorded","taskId":"ser-task-1","attemptId":"ser-attempt-1","resultId":null,"value":null,"activeAttemptIds":null,"limit":null},
+ {"eventId":"ser-d1","tick":5,"kind":"dispatch.recorded","taskId":"ser-task-1","attemptId":"ser-attempt-1","resultId":null,"value":null,"activeAttemptIds":null,"limit":null},
+ {"eventId":"ser-c1","tick":6,"kind":"concurrency.sampled","taskId":null,"attemptId":null,"resultId":null,"value":null,"activeAttemptIds":["ser-attempt-1"],"limit":1},
+ {"eventId":"ser-c2","tick":7,"kind":"concurrency.sampled","taskId":null,"attemptId":null,"resultId":null,"value":null,"activeAttemptIds":["ser-attempt-1"],"limit":1},
+ {"eventId":"ser-c3","tick":8,"kind":"concurrency.sampled","taskId":null,"attemptId":null,"resultId":null,"value":null,"activeAttemptIds":["ser-attempt-1"],"limit":1},
+ {"eventId":"ser-t1","tick":9,"kind":"task.terminal","taskId":"ser-task-1","attemptId":"ser-attempt-1","resultId":"ser-result-1","value":null,"activeAttemptIds":null,"limit":null},
+ {"eventId":"ser-co1","tick":10,"kind":"completion.recorded","taskId":"ser-task-1","attemptId":"ser-attempt-1","resultId":"ser-result-1","value":null,"activeAttemptIds":null,"limit":null},
+ {"eventId":"ser-result1","tick":11,"kind":"result.recorded","taskId":"ser-task-1","attemptId":"ser-attempt-1","resultId":"ser-result-1","value":1,"activeAttemptIds":null,"limit":null},
+ {"eventId":"ser-r2","tick":12,"kind":"task.running","taskId":"ser-task-2","attemptId":"ser-attempt-2","resultId":null,"value":null,"activeAttemptIds":null,"limit":null},
+ {"eventId":"ser-o2","tick":13,"kind":"ownership.recorded","taskId":"ser-task-2","attemptId":"ser-attempt-2","resultId":null,"value":null,"activeAttemptIds":null,"limit":null},
+ {"eventId":"ser-d2","tick":14,"kind":"dispatch.recorded","taskId":"ser-task-2","attemptId":"ser-attempt-2","resultId":null,"value":null,"activeAttemptIds":null,"limit":null},
+ {"eventId":"ser-c4","tick":15,"kind":"concurrency.sampled","taskId":null,"attemptId":null,"resultId":null,"value":null,"activeAttemptIds":["ser-attempt-2"],"limit":1},
+ {"eventId":"ser-c5","tick":16,"kind":"concurrency.sampled","taskId":null,"attemptId":null,"resultId":null,"value":null,"activeAttemptIds":["ser-attempt-2"],"limit":1},
+ {"eventId":"ser-c6","tick":17,"kind":"concurrency.sampled","taskId":null,"attemptId":null,"resultId":null,"value":null,"activeAttemptIds":["ser-attempt-2"],"limit":1},
+ {"eventId":"ser-t2","tick":18,"kind":"task.terminal","taskId":"ser-task-2","attemptId":"ser-attempt-2","resultId":"ser-result-2","value":null,"activeAttemptIds":null,"limit":null},
+ {"eventId":"ser-co2","tick":19,"kind":"completion.recorded","taskId":"ser-task-2","attemptId":"ser-attempt-2","resultId":"ser-result-2","value":null,"activeAttemptIds":null,"limit":null},
+ {"eventId":"ser-result2","tick":20,"kind":"result.recorded","taskId":"ser-task-2","attemptId":"ser-attempt-2","resultId":"ser-result-2","value":2,"activeAttemptIds":null,"limit":null}
+ ]
+}

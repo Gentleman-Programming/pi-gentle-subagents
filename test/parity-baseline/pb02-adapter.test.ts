@@ -1,12 +1,30 @@
 import { readFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error JavaScript harness module has no declarations.
 import { adaptPB02 } from '../../scripts/parity-baseline/adapters/PB-02.mjs';
 
 const root = new URL('../../', import.meta.url);
 const read = (name: string) => readFileSync(new URL(`evidence/parity-baseline/fixtures/${name}`, root), 'utf8');
-const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+const manifest = () => ({
+  schemaVersion: 1,
+  fixtures: [
+    { identity: 'PB-01', path: 'PB-01.json', sha256: '86c48b13224da2de87e258bd6681187b73b46f147eca947ffe0aa25c613f3093' },
+    { identity: 'PB-02', path: 'PB-02.json', sha256: 'c7312d5567953b6357221b216aeaec1635d634a3a19e16ae89f0b61bbad15cc8' },
+    { identity: 'PB-03', path: 'PB-03.json', sha256: 'f877f8167aab9c0512c441c3e1c68045393b74945ee1e7805997806659ae6dda' },
+    { identity: 'PB-04', path: 'PB-04.json', sha256: '9cc8bbc646ad530051b0e919c9c62617397b0012a678f8e89b8c91e5d401b972' },
+  ],
+  eventSeeds: [
+    { owner: 'PB-04', caseId: 'single-foreground',
+      eventSeedId: 'pb-04-single-foreground-events-v1', path: 'events/pb-04/single-foreground.json', sha256: 'bbad31dcfcaa968a7bdd830bae26cb00faa9df323c9d6e998ae02b000af82999' },
+    { owner: 'PB-04', caseId: 'serial-foreground',
+      eventSeedId: 'pb-04-serial-foreground-events-v1', path: 'events/pb-04/serial-foreground.json', sha256: 'd1da6c5fb275a1c8b34ec45f1fdf7e2fb847882c35ab9e3f6899d4fad44beb8c' },
+    { owner: 'PB-04', caseId: 'bounded-concurrency',
+      eventSeedId: 'pb-04-bounded-concurrency-events-v1',
+      path: 'events/pb-04/bounded-concurrency.json', sha256: 'dd5c2fa54499579cbeb52f9cc1f0ca64b8c2053da4f3c65010b5ae611bf28373' },
+    { owner: 'PB-04', caseId: 'mixed-background',
+      eventSeedId: 'pb-04-mixed-background-events-v1', path: 'events/pb-04/mixed-background.json', sha256: 'b71e954d3586bebf2f4f679e3b13d615abec5daab0c8f5367ec5c1bf86ea5f17' },
+  ],
+});
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 const ids = ['full-capability', 'absent-message-renderer', 'absent-shortcut', 'absent-lifecycle-listener', 'absent-widget', 'absent-terminal-input'];
 const fields = ['tools', 'commands', 'warnings', 'shortcuts', 'messageRenderers', 'sessionHandlers', 'listeners', 'widgets', 'terminalInputListeners', 'cleanup', 'fallback'];
@@ -32,13 +50,12 @@ const rejects = (label: string, mutate: (value: any) => void, id = ids[0]) => { 
 describe('PB-02 adapter', () => {
   it('uses the exact hyphenated PB-02 identity in fixture metadata', () => {
     expect(fixture().identity).toBe('PB-02');
-    expect(JSON.parse(read('manifest.json')).fixtures.map(({ identity }: { identity: string }) => identity)).toEqual(['PB-01', 'PB-02', 'PB-03']);
+    expect(JSON.parse(read('manifest.json')).fixtures.map(({ identity }: { identity: string }) => identity)).toEqual(['PB-01', 'PB-02', 'PB-03', 'PB-04']);
   });
 
   it('owns six exact fixture vectors and the PB-01 coexistence manifest', () => {
-    const pb01 = read('PB-01.json'); const pb02 = read('PB-02.json'); const pb03 = read('PB-03.json');
     expect(fixture()).toEqual({ schemaVersion: 1, identity: 'PB-02', fixtureId: 'pb-02-registration-lifecycle-v1', procedureId: 'pb-02-registration-lifecycle-v1', normalizationId: 'pb-02-registration-observation-v1', cases: ids.map((id) => ({ id, absentCapability: id === ids[0] ? null : id.slice(7), requiredSubObservations: fields })) });
-    expect(JSON.parse(read('manifest.json'))).toEqual({ schemaVersion: 1, fixtures: [{ identity: 'PB-01', path: 'PB-01.json', sha256: digest(pb01) }, { identity: 'PB-02', path: 'PB-02.json', sha256: digest(pb02) }, { identity: 'PB-03', path: 'PB-03.json', sha256: digest(pb03) }] });
+    expect(JSON.parse(read('manifest.json'))).toEqual(manifest());
   });
 
   it.each(ids)('preserves every ordered observation family exactly for %s', (caseId) => {

@@ -16,6 +16,86 @@ function copy(value,seen=new Set()) {
  if(names.some(key=>!standard(descriptors.get(key))))fail(); const result=array?[]:{}; for(const key of names)result[key]=copy(descriptors.get(key).value,seen); return result;
 }
 const frozen=value=>{if(value&&typeof value==='object'){Object.values(value).forEach(frozen);Object.freeze(value);}return value;};
-export function validateFixtureManifest(root,input){try{const value=copy(input),entries=[['PB-01','PB-01.json'],['PB-02','PB-02.json'],['PB-03','PB-03.json']];if(!text(root)||!exact(value,['schemaVersion','fixtures'])||value.schemaVersion!==1||!Array.isArray(value.fixtures)||value.fixtures.length!==entries.length)fail();value.fixtures.forEach((item,index)=>{const[identity,fixturePath]=entries[index];if(!exact(item,['identity','path','sha256'])||item.identity!==identity||item.path!==fixturePath||!/^[a-f0-9]{64}$/u.test(item.sha256)||digest(fs.readFileSync(path.join(root,item.path)))!==item.sha256)fail();});return frozen(value);}catch{return fail();}}
 export function validatePB03Fixture(root,input){try{if(!text(root))fail();const value=copy(input);if(!exact(value,fields)||value.schemaVersion!==1||value.identity!=='PB-03'||value.fixtureId!=='pb-03-configuration-fixture-v1'||value.procedureId!=='pb-03-seeded-configuration-v1'||value.normalizationId!=='pb-03-configuration-observation-v1'||!Array.isArray(value.cases)||!Array.isArray(value.seeds)||value.cases.length!==cases.length||value.seeds.length!==seeds.length)fail();value.cases.forEach((item,index)=>{if(!exact(item,['id','requiredSubObservations'])||item.id!==cases[index]||!Array.isArray(item.requiredSubObservations)||item.requiredSubObservations.length!==selectors.length||item.requiredSubObservations.some((name,offset)=>name!==selectors[offset]))fail();});const declared=new Set();value.seeds.forEach((item,index)=>{const[seedPath,role,sha256]=seeds[index];if(!exact(item,['path','role','sha256'])||item.path!==seedPath||item.role!==role||item.sha256!==sha256||!safePath(item.path)||declared.has(item.sha256)||digest(fs.readFileSync(path.join(root,item.path)))!==sha256)fail();declared.add(item.sha256);});return frozen(value);}catch{return fail();}}
 Object.freeze(validatePB03Fixture);
+
+const fixtureManifestAnchors = Object.freeze([
+  ['PB-01', 'PB-01.json', '86c48b13224da2de87e258bd6681187b73b46f147eca947ffe0aa25c613f3093'],
+  ['PB-02', 'PB-02.json', 'c7312d5567953b6357221b216aeaec1635d634a3a19e16ae89f0b61bbad15cc8'],
+  ['PB-03', 'PB-03.json', 'f877f8167aab9c0512c441c3e1c68045393b74945ee1e7805997806659ae6dda'],
+  ['PB-04', 'PB-04.json', '9cc8bbc646ad530051b0e919c9c62617397b0012a678f8e89b8c91e5d401b972'],
+].map(Object.freeze));
+
+const eventSeedManifestAnchors = Object.freeze([
+  [
+    'PB-04', 'single-foreground', 'pb-04-single-foreground-events-v1',
+    'events/pb-04/single-foreground.json',
+    'bbad31dcfcaa968a7bdd830bae26cb00faa9df323c9d6e998ae02b000af82999',
+  ],
+  [
+    'PB-04', 'serial-foreground', 'pb-04-serial-foreground-events-v1',
+    'events/pb-04/serial-foreground.json',
+    'd1da6c5fb275a1c8b34ec45f1fdf7e2fb847882c35ab9e3f6899d4fad44beb8c',
+  ],
+  [
+    'PB-04', 'bounded-concurrency', 'pb-04-bounded-concurrency-events-v1',
+    'events/pb-04/bounded-concurrency.json',
+    'dd5c2fa54499579cbeb52f9cc1f0ca64b8c2053da4f3c65010b5ae611bf28373',
+  ],
+  [
+    'PB-04', 'mixed-background', 'pb-04-mixed-background-events-v1',
+    'events/pb-04/mixed-background.json',
+    'b71e954d3586bebf2f4f679e3b13d615abec5daab0c8f5367ec5c1bf86ea5f17',
+  ],
+].map(Object.freeze));
+
+const authorityPaths = Object.freeze([
+  'manifest.json',
+  ...fixtureManifestAnchors.map(([, file]) => file),
+  ...eventSeedManifestAnchors.map(([, , , file]) => file),
+]);
+
+const exactOrdered = (value, keys) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const actual = Object.keys(value);
+  return actual.length === keys.length && keys.every((key, index) => actual[index] === key);
+};
+
+function readAuthorityBytes(root) {
+  if (!text(root)) fail();
+  return new Map(
+    authorityPaths.map((file) => [file, fs.readFileSync(path.join(root, file))]),
+  );
+}
+
+function validateFixtureEntry(item, index, bytes) {
+  const [identity, file, sha256] = fixtureManifestAnchors[index];
+  if (!exactOrdered(item, ['identity', 'path', 'sha256'])) fail();
+  if (item.identity !== identity || item.path !== file || item.sha256 !== sha256) fail();
+  if (digest(bytes.get(file)) !== sha256) fail();
+}
+
+function validateEventSeedEntry(item, index, bytes) {
+  const [owner, caseId, eventSeedId, file, sha256] = eventSeedManifestAnchors[index];
+  if (!exactOrdered(item, ['owner', 'caseId', 'eventSeedId', 'path', 'sha256'])) fail();
+  if (item.owner !== owner || item.caseId !== caseId || item.eventSeedId !== eventSeedId) fail();
+  if (item.path !== file || item.sha256 !== sha256 || digest(bytes.get(file)) !== sha256) fail();
+}
+
+export function validateFixtureManifest(root, input) {
+  try {
+    const bytes = readAuthorityBytes(root);
+    const value = copy(input);
+    if (!exactOrdered(value, ['schemaVersion', 'fixtures', 'eventSeeds'])) fail();
+    if (value.schemaVersion !== 1 || !Array.isArray(value.fixtures)) fail();
+    if (!Array.isArray(value.eventSeeds)) fail();
+    if (value.fixtures.length !== fixtureManifestAnchors.length) fail();
+    if (value.eventSeeds.length !== eventSeedManifestAnchors.length) fail();
+    value.fixtures.forEach((item, index) => validateFixtureEntry(item, index, bytes));
+    value.eventSeeds.forEach((item, index) => validateEventSeedEntry(item, index, bytes));
+    return frozen(value);
+  } catch {
+    return fail();
+  }
+}
+Object.freeze(validateFixtureManifest);

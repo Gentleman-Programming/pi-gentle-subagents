@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "identity": "PB-04",
+  "fixtureId": "pb-04-controlled-execution-fixture-v1",
+  "procedureId": "pb-04-controlled-execution-v1",
+  "normalizationId": "pb-04-execution-observation-v1",
+  "cases": [
+    { "id": "single-foreground", "eventSeedPath": "events/pb-04/single-foreground.json", "eventSeedId": "pb-04-single-foreground-events-v1", "eventSeedDigest": "bbad31dcfcaa968a7bdd830bae26cb00faa9df323c9d6e998ae02b000af82999", "mode": "foreground", "concurrencyLimit": 1, "tasks": [{ "taskId": "sf-task-1", "attemptId": "sf-attempt-1", "resultId": "sf-result-1", "mode": "foreground", "owner": "foreground-parent" }] },
+    { "id": "serial-foreground", "eventSeedPath": "events/pb-04/serial-foreground.json", "eventSeedId": "pb-04-serial-foreground-events-v1", "eventSeedDigest": "d1da6c5fb275a1c8b34ec45f1fdf7e2fb847882c35ab9e3f6899d4fad44beb8c", "mode": "foreground", "concurrencyLimit": 1, "tasks": [{ "taskId": "ser-task-1", "attemptId": "ser-attempt-1", "resultId": "ser-result-1", "mode": "foreground", "owner": "foreground-parent" }, { "taskId": "ser-task-2", "attemptId": "ser-attempt-2", "resultId": "ser-result-2", "mode": "foreground", "owner": "foreground-parent" }] },
+    { "id": "bounded-concurrency", "eventSeedPath": "events/pb-04/bounded-concurrency.json", "eventSeedId": "pb-04-bounded-concurrency-events-v1", "eventSeedDigest": "dd5c2fa54499579cbeb52f9cc1f0ca64b8c2053da4f3c65010b5ae611bf28373", "mode": "foreground", "concurrencyLimit": 2, "tasks": [{ "taskId": "bc-task-1", "attemptId": "bc-attempt-1", "resultId": "bc-result-1", "mode": "foreground", "owner": "foreground-parent" }, { "taskId": "bc-task-2", "attemptId": "bc-attempt-2", "resultId": "bc-result-2", "mode": "foreground", "owner": "foreground-parent" }, { "taskId": "bc-task-3", "attemptId": "bc-attempt-3", "resultId": "bc-result-3", "mode": "foreground", "owner": "foreground-parent" }] },
+    { "id": "mixed-background", "eventSeedPath": "events/pb-04/mixed-background.json", "eventSeedId": "pb-04-mixed-background-events-v1", "eventSeedDigest": "b71e954d3586bebf2f4f679e3b13d615abec5daab0c8f5367ec5c1bf86ea5f17", "mode": "mixed", "concurrencyLimit": 2, "tasks": [{ "taskId": "mb-task-1", "attemptId": "mb-attempt-1", "resultId": "mb-result-1", "mode": "foreground", "owner": "foreground-parent" }, { "taskId": "mb-task-2", "attemptId": "mb-attempt-2", "resultId": "mb-result-2", "mode": "background", "owner": "background-supervisor" }, { "taskId": "mb-task-3", "attemptId": "mb-attempt-3", "resultId": "mb-result-3", "mode": "foreground", "owner": "foreground-parent" }] }
+  ]
+}

@@ -15,6 +15,41 @@
       "identity": "PB-03",
       "path": "PB-03.json",
       "sha256": "f877f8167aab9c0512c441c3e1c68045393b74945ee1e7805997806659ae6dda"
+    },
+    {
+      "identity": "PB-04",
+      "path": "PB-04.json",
+      "sha256": "9cc8bbc646ad530051b0e919c9c62617397b0012a678f8e89b8c91e5d401b972"
+    }
+  ],
+  "eventSeeds": [
+    {
+      "owner": "PB-04",
+      "caseId": "single-foreground",
+      "eventSeedId": "pb-04-single-foreground-events-v1",
+      "path": "events/pb-04/single-foreground.json",
+      "sha256": "bbad31dcfcaa968a7bdd830bae26cb00faa9df323c9d6e998ae02b000af82999"
+    },
+    {
+      "owner": "PB-04",
+      "caseId": "serial-foreground",
+      "eventSeedId": "pb-04-serial-foreground-events-v1",
+      "path": "events/pb-04/serial-foreground.json",
+      "sha256": "d1da6c5fb275a1c8b34ec45f1fdf7e2fb847882c35ab9e3f6899d4fad44beb8c"
+    },
+    {
+      "owner": "PB-04",
+      "caseId": "bounded-concurrency",
+      "eventSeedId": "pb-04-bounded-concurrency-events-v1",
+      "path": "events/pb-04/bounded-concurrency.json",
+      "sha256": "dd5c2fa54499579cbeb52f9cc1f0ca64b8c2053da4f3c65010b5ae611bf28373"
+    },
+    {
+      "owner": "PB-04",
+      "caseId": "mixed-background",
+      "eventSeedId": "pb-04-mixed-background-events-v1",
+      "path": "events/pb-04/mixed-background.json",
+      "sha256": "b71e954d3586bebf2f4f679e3b13d615abec5daab0c8f5367ec5c1bf86ea5f17"
     }
   ]
 }
