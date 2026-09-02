@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 // @ts-expect-error JavaScript evidence helper is exercised directly by Vitest.
 import { createEvidenceRef, readEvidence } from '../../scripts/parity-baseline/lib/evidence-store.mjs';
 // @ts-expect-error PB-03 fixture authority is introduced by this work unit.
@@ -164,6 +164,12 @@ describe('PB-04 semantic fixture authority', () => {
     return { directory, value };
   };
 
+  it('rejects a cyclic fresh fixture precursor before schema validation', () => {
+    const { directory, value } = precursor();
+    (value.cases[0] as any).cycle = value;
+    expect(() => validatePB04Fixture(directory, value)).toThrow('invalid PB-04 fixture: schema');
+  });
+
   it('accepts independent deeply frozen snapshots without aliases', () => {
     const input = fixture();
     const first = validatePB04Fixture(fixtureRoot, input);
@@ -287,6 +293,132 @@ describe('PB-04 semantic fixture authority', () => {
     expect(gets).toBe(0);
     expect([...keys.values()].every((count) => count === 1)).toBe(true);
     expect([...reads.values()].every((count) => count === 1)).toBe(true);
+  });
+
+  it.each([
+    ['extra top-level key', (value: any) => value.extra = true, 'schema'],
+    ['missing top-level key', (value: any) => delete value.identity, 'schema'],
+    ['reordered top-level keys', (value: any) => { delete value.identity; value.identity = 'PB-04'; }, 'schema'],
+    ['extra nested task key', (value: any) => value.cases[0].tasks[0].extra = true, 'task'],
+    ['missing nested case key', (value: any) => delete value.cases[0].mode, 'task'],
+    ['reordered nested case keys', (value: any) => { const item = value.cases[0]; delete item.id; item.id = 'single-foreground'; }, 'task'],
+    ['missing nested task key', (value: any) => delete value.cases[0].tasks[0].owner, 'task'],
+    ['reordered nested task keys', (value: any) => { const item = value.cases[0].tasks[0]; delete item.taskId; item.taskId = 'sf-task-1'; }, 'task'],
+    ['shared nested task', (value: any) => value.cases[0].tasks.push(value.cases[0].tasks[0]), 'schema'],
+    ['sparse cases', (value: any) => { value.cases = [, ...value.cases]; }, 'schema'],
+    ['function value', (value: any) => value.identity = () => 'PB-04', 'schema'],
+    ['symbol value', (value: any) => value.identity = Symbol('PB-04'), 'schema'],
+    ['nonfinite value', (value: any) => value.schemaVersion = Infinity, 'schema'],
+    ['negative zero', (value: any) => value.schemaVersion = -0, 'schema'],
+    ['custom prototype', (value: any) => Object.setPrototypeOf(value.cases[0], null), 'schema'],
+    ['nonenumerable descriptor', (value: any) => Object.defineProperty(value, 'identity', { enumerable: false }), 'schema'],
+    ['nonwritable descriptor', (value: any) => Object.defineProperty(value, 'identity', { writable: false }), 'schema'],
+    ['nonconfigurable descriptor', (value: any) => Object.defineProperty(value, 'identity', { configurable: false }), 'schema'],
+  ])('rejects %s from a fresh valid precursor', (_label, mutate, reason) => {
+    const { directory, value } = precursor();
+    mutate(value);
+    expect(() => validatePB04Fixture(directory, value)).toThrow(`invalid PB-04 fixture: ${reason}`);
+  });
+
+  it('rejects accessors without invoking their getter', () => {
+    const { directory, value } = precursor();
+    let calls = 0;
+    Object.defineProperty(value, 'identity', { enumerable: true, get() { calls += 1; return 'PB-04'; } });
+    expect(() => validatePB04Fixture(directory, value)).toThrow('invalid PB-04 fixture: schema');
+    expect(calls).toBe(0);
+  });
+
+  const own = (target: object, key: PropertyKey) => Reflect.getOwnPropertyDescriptor(target, key);
+  const nested = (value: any, handler: ProxyHandler<object>, task = false) => {
+    const parent = task ? value.cases[0].tasks : value.cases;
+    parent[0] = new Proxy(parent[0], handler);
+    return value;
+  };
+  it.each([
+    ['ownKeys throw', (value: any) => nested(value, { ownKeys() { throw new Error('keys'); } }), 'schema'],
+    ['descriptor throw', (value: any) => nested(value, { getOwnPropertyDescriptor() { throw new Error('descriptor'); } }), 'schema'],
+    ['reordered case keys', (value: any) => nested(value, { ownKeys: (target) => Reflect.ownKeys(target).reverse() }), 'task'],
+    ['incomplete case keys', (value: any) => nested(value, { ownKeys: (target) => Reflect.ownKeys(target).filter((key) => key !== 'mode') }), 'task'],
+    ['incomplete task descriptor', (value: any) => nested(value, { getOwnPropertyDescriptor: (target, key) => key === 'owner' ? undefined : own(target, key) }, true), 'schema'],
+    ['nonstandard task data descriptor', (value: any) => nested(value, {
+      getOwnPropertyDescriptor: (target, key) => key === 'owner'
+        ? { ...own(target, key)!, writable: false } : own(target, key),
+    }, true), 'schema'],
+    ['task descriptor substitution', (value: any) => nested(value, {
+      getOwnPropertyDescriptor: (target, key) => key === 'taskId'
+        ? { ...own(target, key)!, value: 'wrong' } : own(target, key),
+    }, true), 'task'],
+    ['capture mutation with invalid data', (value: any) => nested(value, {
+      getOwnPropertyDescriptor(target, key) {
+        if (key === 'id') (target as any).mode = 'background';
+        return own(target, key);
+      },
+    }), 'task'],
+  ])('rejects nested Proxy %s from a fresh valid precursor', (_label, wrap, reason) => {
+    const { directory, value } = precursor();
+    expect(() => validatePB04Fixture(directory, wrap(value))).toThrow(`invalid PB-04 fixture: ${reason}`);
+  });
+
+  it('rejects nested Proxy accessor descriptors without invoking their getter', () => {
+    const { directory, value } = precursor(); let calls = 0;
+    const input = nested(value, { getOwnPropertyDescriptor(target, key) {
+      return key === 'owner' ? { enumerable: true, configurable: true, get() { calls += 1; return 'foreground-parent'; } } : own(target, key);
+    } }, true);
+    expect(() => validatePB04Fixture(directory, input)).toThrow('invalid PB-04 fixture: schema');
+    expect(calls).toBe(0);
+  });
+
+  it('rejects root Proxy descriptor substitution separately', () => {
+    const { directory, value } = precursor();
+    const input = new Proxy(value, { getOwnPropertyDescriptor: (target, key) => key === 'identity'
+      ? { ...own(target, key)!, value: 'wrong' } : own(target, key) });
+    expect(() => validatePB04Fixture(directory, input)).toThrow('invalid PB-04 fixture: schema');
+  });
+
+  it('uses the already-captured Proxy snapshot, not second-read detection', () => {
+    const { directory, value } = precursor();
+    const input = new Proxy(value, { getOwnPropertyDescriptor(target, key) {
+      if (key === 'normalizationId') (target as any).identity = 'mutated-after-capture';
+      return own(target, key);
+    } });
+    const accepted = validatePB04Fixture(directory, input);
+    expect(value.identity).toBe('mutated-after-capture');
+    expect(accepted.identity).toBe('PB-04');
+  });
+
+  it('uses exactly one captured read for each PB-04 authority path', async () => {
+    const directory = root(); fs.cpSync(fixtureRoot, directory, { recursive: true });
+    const input = fixture(directory); const original = fs.readFileSync; const reads = new Map<string, number>();
+    try {
+      (fs as any).readFileSync = ((file: fs.PathOrFileDescriptor, ...args: any[]) => {
+        const bytes = original(file, ...args); const name = String(file);
+        reads.set(name, (reads.get(name) ?? 0) + 1);
+        if (name.endsWith('PB-04.json')) fs.appendFileSync(name, ' ');
+        return bytes;
+      }) as typeof fs.readFileSync;
+      vi.resetModules();
+      const moduleUrl = new URL('../../scripts/parity-baseline/lib/fixture-definition.mjs?captured-read', import.meta.url).href;
+      const { validatePB04Fixture: captured } = await import(moduleUrl);
+      (fs as any).readFileSync = () => { throw new Error('reread'); };
+      expect(captured(directory, input)).toEqual(input);
+      expect([...reads.keys()].map((file) => path.relative(directory, file))).toEqual([
+        'manifest.json', 'PB-04.json',
+        'events/pb-04/single-foreground.json', 'events/pb-04/serial-foreground.json',
+        'events/pb-04/bounded-concurrency.json', 'events/pb-04/mixed-background.json',
+      ]);
+      expect([...reads.values()]).toEqual([1, 1, 1, 1, 1, 1]);
+    } finally { (fs as any).readFileSync = original; vi.resetModules(); }
+  });
+
+  it('copies an accepted Proxy snapshot without retaining its source graph', () => {
+    const input = fixture();
+    const accepted = validatePB04Fixture(fixtureRoot, new Proxy(input, {
+      ownKeys: Reflect.ownKeys,
+      getOwnPropertyDescriptor: Reflect.getOwnPropertyDescriptor,
+      get() { throw new Error('ordinary get'); },
+    }));
+    input.cases[0].tasks[0].taskId = 'mutated-after-capture';
+    expect(accepted.cases[0].tasks[0].taskId).toBe('sf-task-1');
   });
 });
 
