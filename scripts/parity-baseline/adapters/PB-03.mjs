@@ -1,5 +1,5 @@
 import { validatePB03Fixture } from '../lib/fixture-definition.mjs';
-import { copy, exact, freeze, own, text } from '../lib/observation-adapter.mjs';
+import { exact, freeze, own, text } from '../lib/observation-adapter.mjs';
 
 const CASES = ['global-only', 'project-only', 'project-over-global', 'malformed-source', 'shadowed-source'];
 const DEFINITIONS = {
@@ -32,11 +32,45 @@ const allowed = (source, role) => source === 'agent'
     ? /^(global|project)-(agent-markdown|profiles)$/u.test(role)
     : /^(global|project)-settings$/u.test(role);
 const fieldId = (family, identity, record) => `${family}:${identity.map((key) => record[key]).join(':')}`;
+const schema = (value, fields) => {
+  exact(value, fields);
+  return Object.keys(value).every((field, index) => field === fields[index]) ? value : fail();
+};
+const snapshot = (value, seen = new WeakSet()) => {
+  if (value === null || typeof value === 'boolean' || typeof value === 'string' && text(value)
+    || typeof value === 'number' && Number.isFinite(value) && !Object.is(value, -0)) return value;
+  if (!value || typeof value !== 'object' || seen.has(value)) fail();
+  seen.add(value);
+  const prototype = Object.getPrototypeOf(value), keys = Reflect.ownKeys(value);
+  const descriptors = new Map(keys.map((key) => [key, Object.getOwnPropertyDescriptor(value, key)]));
+  if (keys.some((key) => typeof key === 'symbol')) fail();
+  if (Array.isArray(value)) {
+    const length = descriptors.get('length');
+    if (prototype !== Array.prototype || !length || length.enumerable || length.configurable || !length.writable
+      || !Object.hasOwn(length, 'value') || !Number.isSafeInteger(length.value) || length.value < 0
+      || keys.length !== length.value + 1 || keys.some((key, index) => key !== (index === length.value ? 'length' : String(index)))) fail();
+    const output = [];
+    for (let index = 0; index < length.value; index += 1) {
+      const descriptor = descriptors.get(String(index));
+      if (!descriptor || !descriptor.enumerable || !descriptor.configurable || !descriptor.writable || !Object.hasOwn(descriptor, 'value')) fail();
+      output.push(snapshot(descriptor.value, seen));
+    }
+    return freeze(output);
+  }
+  if (prototype !== Object.prototype) fail();
+  const output = {};
+  for (const key of keys) {
+    const descriptor = descriptors.get(key);
+    if (!descriptor || !descriptor.enumerable || !descriptor.configurable || !descriptor.writable || !Object.hasOwn(descriptor, 'value')) fail();
+    Object.defineProperty(output, key, { value: snapshot(descriptor.value, seen), enumerable: true, writable: false, configurable: false });
+  }
+  return freeze(output);
+};
 
 function record(family, value, seeds) {
   const [names, identity, valueKey, source] = DEFINITIONS[family];
   const keys = names.split(' ');
-  exact(value, keys);
+  schema(value, keys);
   for (const key of keys) {
     if (!['enabled', 'value', 'sourceDigest'].includes(key) && !text(value[key])) fail();
   }
@@ -68,14 +102,14 @@ function precedence(observation, fields, seeds, caseId) {
   if (!Array.isArray(observation.precedence) || !observation.precedence.length) fail();
   const bindings = new Map();
   for (const item of observation.precedence) {
-    exact(item, ['field', 'candidates', 'selectedSourcePath', 'selectedValue']);
+    schema(item, ['field', 'candidates', 'selectedSourcePath', 'selectedValue']);
     const direct = fields.get(item.field);
     if (!text(item.field) || !direct || bindings.has(item.field) || !Array.isArray(item.candidates)
       || !item.candidates.length || !safePath(item.selectedSourcePath)) fail();
     const [, , , source] = DEFINITIONS[item.field.split(':', 1)[0]];
     const paths = new Set();
     for (const candidate of item.candidates) {
-      exact(candidate, ['sourcePath', 'value']);
+      schema(candidate, ['sourcePath', 'value']);
       const seed = seeds.get(candidate.sourcePath);
       const loser = caseId === 'shadowed-source' && seed?.role === 'shadowed-source'
         && candidate.sourcePath !== item.selectedSourcePath;
@@ -96,7 +130,7 @@ function provenance(observation, fields, seeds) {
   if (!Array.isArray(observation.provenance) || !observation.provenance.length) fail();
   const bindings = new Map();
   for (const item of observation.provenance) {
-    exact(item, ['field', 'sourceKind', 'path', 'seedDigest']);
+    schema(item, ['field', 'sourceKind', 'path', 'seedDigest']);
     const direct = fields.get(item.field), seed = seeds.get(item.path);
     if (!text(item.field) || !direct || bindings.has(item.field) || !['global', 'project'].includes(item.sourceKind)
       || !seed || item.path !== direct.path || item.seedDigest !== seed.sha256 || item.sourceKind !== kind(seed.role)) fail();
@@ -115,7 +149,7 @@ function cases(caseId, fields, precedenceBindings, diagnostics, seeds) {
   if (!malformed || !shadowed || !Array.isArray(diagnostics) || expected && diagnostics.length !== 1
     || !expected && diagnostics.length) fail();
   if (expected) {
-    exact(diagnostics[0], ['code', 'severity', 'path', 'message']);
+    schema(diagnostics[0], ['code', 'severity', 'path', 'message']);
     if (!expected.every((value, index) => diagnostics[0][['code', 'severity', 'path', 'message'][index]] === value)) fail();
   }
   for (const item of fields.values()) if ([malformed.path, shadowed.path].includes(item.path)) fail();
@@ -137,7 +171,7 @@ function cases(caseId, fields, precedenceBindings, diagnostics, seeds) {
 }
 
 function observe(value, caseId, seeds) {
-  exact(value, KEYS);
+  schema(value, KEYS);
   const authority = new Map(seeds.map((seed) => [seed.path, seed]));
   const fields = effective(value, authority);
   const bindings = precedence(value, fields, authority, caseId);
@@ -155,7 +189,7 @@ export function adaptPB03(input) {
     const target = own(request.target, ['observe']);
     if (typeof target.observe !== 'function' || fixtureCase.id !== request.caseId) fail();
     const descriptor = freeze({ caseId: fixtureCase.id, seeds: fixture.seeds });
-    const observation = observe(copy(target.observe(descriptor)), fixtureCase.id, fixture.seeds);
+    const observation = observe(snapshot(target.observe(descriptor)), fixtureCase.id, fixture.seeds);
     return freeze({ identity: fixture.identity, fixtureId: fixture.fixtureId, procedureId: fixture.procedureId,
       normalizationId: fixture.normalizationId, caseId: fixtureCase.id, observation });
   } catch { return fail(); }
