@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createEvidenceRef, readEvidence } from '../../scripts/parity-baseline/lib/evidence-store.mjs';
 // @ts-expect-error PB-03 fixture authority is introduced by this work unit.
 import * as fixtureDefinition from '../../scripts/parity-baseline/lib/fixture-definition.mjs';
-const { validateFixtureManifest, validatePB03Fixture } = fixtureDefinition;
+const { validateFixtureManifest, validatePB03Fixture, validatePB04Fixture } = fixtureDefinition;
 
 const roots: string[] = [];
 function root() { const value = fs.mkdtempSync(path.join(os.tmpdir(), 'evidence-')); roots.push(value); return value; }
@@ -92,7 +92,7 @@ describe('PB-04 immutable asset anchors', () => {
   });
 
   it('keeps external anchors closure-private', () => {
-    expect(Object.keys(fixtureDefinition).sort()).toEqual(['validateFixtureManifest', 'validatePB03Fixture']);
+    expect(Object.keys(fixtureDefinition).sort()).toEqual(['validateFixtureManifest', 'validatePB03Fixture', 'validatePB04Fixture']);
   });
 
   it('returns fresh, deeply frozen manifest snapshots without aliases', () => {
@@ -145,6 +145,148 @@ describe('PB-04 immutable asset anchors', () => {
   ])('rejects fresh valid manifest precursor: %s', (_label, mutate) => {
     const value = validManifest(); mutate(value);
     expect(() => validateFixtureManifest(fixtureRoot, value)).toThrow('invalid PB-03 fixture');
+  });
+});
+
+describe('PB-04 semantic fixture authority', () => {
+  const fixtureRoot = path.resolve(import.meta.dirname, '../../evidence/parity-baseline/fixtures');
+  const fixture = (directory = fixtureRoot) =>
+    JSON.parse(fs.readFileSync(path.join(directory, 'PB-04.json'), 'utf8'));
+  const seed = (directory: string, index: number) =>
+    JSON.parse(fs.readFileSync(path.join(directory, fixture(directory).cases[index].eventSeedPath), 'utf8'));
+  const write = (directory: string, value: any) =>
+    fs.writeFileSync(path.join(directory, 'PB-04.json'), JSON.stringify(value));
+  const precursor = () => {
+    const directory = root();
+    fs.cpSync(fixtureRoot, directory, { recursive: true });
+    const value = fixture(directory);
+    expect(validatePB04Fixture(directory, value)).toEqual(value);
+    return { directory, value };
+  };
+
+  it('accepts independent deeply frozen snapshots without aliases', () => {
+    const input = fixture();
+    const first = validatePB04Fixture(fixtureRoot, input);
+    const second = validatePB04Fixture(fixtureRoot, fixture());
+    expect(first).toEqual(input);
+    expect(Object.isFrozen(first.cases)).toBe(true);
+    expect(Object.isFrozen(first.cases[0].tasks)).toBe(true);
+    expect(Object.isFrozen(first.cases[0].tasks[0])).toBe(true);
+    expect(second).not.toBe(first);
+    input.cases[0].tasks[0].taskId = 'changed';
+    expect(first.cases[0].tasks[0].taskId).toBe('sf-task-1');
+  });
+
+  it.each([
+    ['schema', ({ directory }: any) => {
+      const value = seed(directory, 0);
+      value.events[0] = { nope: true };
+      fs.writeFileSync(path.join(directory, 'events/pb-04/single-foreground.json'), JSON.stringify(value));
+    }],
+    ['task', ({ value, directory }: any) => {
+      value.cases[3].tasks[1].owner = 'foreground-parent';
+      write(directory, value);
+    }],
+    ['task', ({ value, directory }: any) => {
+      value.cases[0].tasks[0] = { extra: true, ...value.cases[0].tasks[0] };
+      write(directory, value);
+    }],
+    ['cardinality', ({ directory }: any) => {
+      const value = seed(directory, 1);
+      value.events.find((event: any) => event.eventId === 'ser-q2').kind = 'task.running';
+      fs.writeFileSync(path.join(directory, 'events/pb-04/serial-foreground.json'), JSON.stringify(value));
+    }],
+    ['timing', ({ directory }: any) => {
+      const value = seed(directory, 1);
+      const first = value.events.find((event: any) => event.eventId === 'ser-r1');
+      const second = value.events.find((event: any) => event.eventId === 'ser-r2');
+      [first.taskId, second.taskId] = [second.taskId, first.taskId];
+      [first.attemptId, second.attemptId] = [second.attemptId, first.attemptId];
+      fs.writeFileSync(path.join(directory, 'events/pb-04/serial-foreground.json'), JSON.stringify(value));
+    }],
+    ['event', ({ directory }: any) => {
+      const value = seed(directory, 0);
+      value.events[0].eventId = 'sf-wrong';
+      fs.writeFileSync(path.join(directory, 'events/pb-04/single-foreground.json'), JSON.stringify(value));
+    }],
+    ['result', ({ directory }: any) => {
+      const value = seed(directory, 1);
+      value.events.find((event: any) => event.eventId === 'ser-result1').value = 42;
+      fs.writeFileSync(path.join(directory, 'events/pb-04/serial-foreground.json'), JSON.stringify(value));
+    }],
+    ['projection', ({ directory }: any) => {
+      const value = seed(directory, 2);
+      const event = value.events.find((item: any) => item.eventId === 'bc-d1');
+      event.taskId = 'bc-task-2';
+      event.attemptId = 'bc-attempt-2';
+      fs.writeFileSync(path.join(directory, 'events/pb-04/bounded-concurrency.json'), JSON.stringify(value));
+    }],
+    ['result', ({ directory }: any) => {
+      const value = seed(directory, 3);
+      value.events.find((event: any) => event.eventId === 'mb-h2').resultId = 'mb-result-2';
+      fs.writeFileSync(path.join(directory, 'events/pb-04/mixed-background.json'), JSON.stringify(value));
+    }],
+    ['concurrency', ({ directory }: any) => {
+      const value = seed(directory, 2);
+      value.events.find((event: any) => event.eventId === 'bc-c2').activeAttemptIds.reverse();
+      fs.writeFileSync(path.join(directory, 'events/pb-04/bounded-concurrency.json'), JSON.stringify(value));
+    }],
+  ])('rejects %s after proving an isolated valid precursor', (reason, mutate) => {
+    const state = precursor();
+    mutate(state);
+    expect(() => validatePB04Fixture(state.directory, fixture(state.directory)))
+      .toThrow(`invalid PB-04 fixture: ${reason}`);
+  });
+
+  it('rejects a semantically valid coordinated substitution only at external authority', () => {
+    const { directory, value } = precursor();
+    const eventPath = value.cases[0].eventSeedPath;
+    fs.appendFileSync(path.join(directory, eventPath), ' ');
+    value.cases[0].eventSeedDigest = createHash('sha256')
+      .update(fs.readFileSync(path.join(directory, eventPath)))
+      .digest('hex');
+    write(directory, value);
+    const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'manifest.json'), 'utf8'));
+    manifest.eventSeeds[0].sha256 = value.cases[0].eventSeedDigest;
+    manifest.fixtures[3].sha256 = createHash('sha256')
+      .update(fs.readFileSync(path.join(directory, 'PB-04.json')))
+      .digest('hex');
+    fs.writeFileSync(path.join(directory, 'manifest.json'), JSON.stringify(manifest));
+    expect(() => validatePB04Fixture(directory, fixture(directory)))
+      .toThrow('invalid PB-04 fixture: authority');
+  });
+
+  it('accepts a transparent one-ownKeys/one-descriptor/zero-get Proxy', () => {
+    let gets = 0;
+    const reads = new Map<string, number>();
+    const keys = new Map<string, number>();
+    const wrap = (value: any, name = 'root'): any => value && typeof value === 'object'
+      ? new Proxy(value, {
+        ownKeys(target) {
+          keys.set(name, (keys.get(name) ?? 0) + 1);
+          return Reflect.ownKeys(target);
+        },
+        getPrototypeOf: Reflect.getPrototypeOf,
+        getOwnPropertyDescriptor(target, key) {
+          const id = `${name}.${String(key)}`;
+          const count = (reads.get(id) ?? 0) + 1;
+          reads.set(id, count);
+          if (count > 1) throw new Error('reread');
+          const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
+          return descriptor && 'value' in descriptor
+            ? { ...descriptor, value: wrap(descriptor.value, id) }
+            : descriptor;
+        },
+        get() {
+          gets += 1;
+          throw new Error('live get');
+        },
+      })
+      : value;
+    expect(validatePB04Fixture(fixtureRoot, wrap(fixture()))).toEqual(fixture());
+    expect(gets).toBe(0);
+    expect([...keys.values()].every((count) => count === 1)).toBe(true);
+    expect([...reads.values()].every((count) => count === 1)).toBe(true);
   });
 });
 
