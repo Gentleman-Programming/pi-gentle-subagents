@@ -1,0 +1,146 @@
+{
+  "schemaVersion": 1,
+  "identity": "PB-03",
+  "fixtureId": "pb-03-configuration-fixture-v1",
+  "procedureId": "pb-03-seeded-configuration-v1",
+  "normalizationId": "pb-03-configuration-observation-v1",
+  "cases": [
+    {
+      "id": "global-only",
+      "requiredSubObservations": [
+        "parsedAgents",
+        "parsedSubagents",
+        "frontmatter",
+        "modelSettings",
+        "effortSettings",
+        "defaults",
+        "numericValues",
+        "sessionResources",
+        "continuation",
+        "tools",
+        "shortcuts",
+        "precedence",
+        "provenance",
+        "diagnostics"
+      ]
+    },
+    {
+      "id": "project-only",
+      "requiredSubObservations": [
+        "parsedAgents",
+        "parsedSubagents",
+        "frontmatter",
+        "modelSettings",
+        "effortSettings",
+        "defaults",
+        "numericValues",
+        "sessionResources",
+        "continuation",
+        "tools",
+        "shortcuts",
+        "precedence",
+        "provenance",
+        "diagnostics"
+      ]
+    },
+    {
+      "id": "project-over-global",
+      "requiredSubObservations": [
+        "parsedAgents",
+        "parsedSubagents",
+        "frontmatter",
+        "modelSettings",
+        "effortSettings",
+        "defaults",
+        "numericValues",
+        "sessionResources",
+        "continuation",
+        "tools",
+        "shortcuts",
+        "precedence",
+        "provenance",
+        "diagnostics"
+      ]
+    },
+    {
+      "id": "malformed-source",
+      "requiredSubObservations": [
+        "parsedAgents",
+        "parsedSubagents",
+        "frontmatter",
+        "modelSettings",
+        "effortSettings",
+        "defaults",
+        "numericValues",
+        "sessionResources",
+        "continuation",
+        "tools",
+        "shortcuts",
+        "precedence",
+        "provenance",
+        "diagnostics"
+      ]
+    },
+    {
+      "id": "shadowed-source",
+      "requiredSubObservations": [
+        "parsedAgents",
+        "parsedSubagents",
+        "frontmatter",
+        "modelSettings",
+        "effortSettings",
+        "defaults",
+        "numericValues",
+        "sessionResources",
+        "continuation",
+        "tools",
+        "shortcuts",
+        "precedence",
+        "provenance",
+        "diagnostics"
+      ]
+    }
+  ],
+  "seeds": [
+    {
+      "path": "fs/pb-03/global/agents/global.md",
+      "role": "global-agent-markdown",
+      "sha256": "eeb3fe9d61cacbb7c56ba3407802ee1e7f8bfacae1962f7f87ed74f32f4b5741"
+    },
+    {
+      "path": "fs/pb-03/global/profiles.json",
+      "role": "global-profiles",
+      "sha256": "22c01b543789973f4033aed47ce3a55f79afc17d9376c384aef09ead4b0abb44"
+    },
+    {
+      "path": "fs/pb-03/global/settings.json",
+      "role": "global-settings",
+      "sha256": "76dc87110ef415d992564799891222f01dd01089ef221e084a09444a3a4ddb10"
+    },
+    {
+      "path": "fs/pb-03/project/.pi/agents/malformed.md",
+      "role": "malformed-source",
+      "sha256": "92b921e41332497c8a7cffe3e8ea3f19dd5a4af8d03d0d796741027bffba9b07"
+    },
+    {
+      "path": "fs/pb-03/project/.pi/agents/project.md",
+      "role": "project-agent-markdown",
+      "sha256": "57f5dd35a33bc3c15f8ed3c351b750a0b1504ddb478fb031d3620b565809e9c0"
+    },
+    {
+      "path": "fs/pb-03/project/.pi/agents/shadowed.md",
+      "role": "shadowed-source",
+      "sha256": "77bedf9b500110d7f6aea7ae14c5b355f0253557cde0e6ee50ccc67334f6b3bc"
+    },
+    {
+      "path": "fs/pb-03/project/.pi/profiles.json",
+      "role": "project-profiles",
+      "sha256": "1ad751cc91d318a07cddb4f6d1e010f2f7b97331ddf670b4ca31872fa934a4f1"
+    },
+    {
+      "path": "fs/pb-03/project/.pi/settings.json",
+      "role": "project-settings",
+      "sha256": "d322ecd7597bfbdfc56ff1e2c01bf3cc3ec70c34c88cf21a6f3e57c09accdd32"
+    }
+  ]
+}
