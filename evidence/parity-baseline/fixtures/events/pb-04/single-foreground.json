@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "eventSeedId": "pb-04-single-foreground-events-v1",
+  "caseId": "single-foreground",
+  "events": [
+    { "eventId": "sf-q", "tick": 1, "kind": "task.queued", "taskId": "sf-task-1", "attemptId": "sf-attempt-1", "resultId": null, "value": null, "activeAttemptIds": null, "limit": null },
+    { "eventId": "sf-r", "tick": 2, "kind": "task.running", "taskId": "sf-task-1", "attemptId": "sf-attempt-1", "resultId": null, "value": null, "activeAttemptIds": null, "limit": null },
+    { "eventId": "sf-o", "tick": 3, "kind": "ownership.recorded", "taskId": "sf-task-1", "attemptId": "sf-attempt-1", "resultId": null, "value": null, "activeAttemptIds": null, "limit": null },
+    { "eventId": "sf-d", "tick": 4, "kind": "dispatch.recorded", "taskId": "sf-task-1", "attemptId": "sf-attempt-1", "resultId": null, "value": null, "activeAttemptIds": null, "limit": null },
+    { "eventId": "sf-c1", "tick": 5, "kind": "concurrency.sampled", "taskId": null, "attemptId": null, "resultId": null, "value": null, "activeAttemptIds": ["sf-attempt-1"], "limit": 1 },
+    { "eventId": "sf-c2", "tick": 6, "kind": "concurrency.sampled", "taskId": null, "attemptId": null, "resultId": null, "value": null, "activeAttemptIds": ["sf-attempt-1"], "limit": 1 },
+    { "eventId": "sf-c3", "tick": 7, "kind": "concurrency.sampled", "taskId": null, "attemptId": null, "resultId": null, "value": null, "activeAttemptIds": ["sf-attempt-1"], "limit": 1 },
+    { "eventId": "sf-t", "tick": 8, "kind": "task.terminal", "taskId": "sf-task-1", "attemptId": "sf-attempt-1", "resultId": "sf-result-1", "value": null, "activeAttemptIds": null, "limit": null },
+    { "eventId": "sf-co", "tick": 9, "kind": "completion.recorded", "taskId": "sf-task-1", "attemptId": "sf-attempt-1", "resultId": "sf-result-1", "value": null, "activeAttemptIds": null, "limit": null },
+    { "eventId": "sf-result", "tick": 10, "kind": "result.recorded", "taskId": "sf-task-1", "attemptId": "sf-attempt-1", "resultId": "sf-result-1", "value": "single-complete", "activeAttemptIds": null, "limit": null }
+  ]
+}

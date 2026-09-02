@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -5,7 +6,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 // @ts-expect-error JavaScript evidence helper is exercised directly by Vitest.
 import { createEvidenceRef, readEvidence } from '../../scripts/parity-baseline/lib/evidence-store.mjs';
 // @ts-expect-error PB-03 fixture authority is introduced by this work unit.
-import { validateFixtureManifest, validatePB03Fixture } from '../../scripts/parity-baseline/lib/fixture-definition.mjs';
+import * as fixtureDefinition from '../../scripts/parity-baseline/lib/fixture-definition.mjs';
+const { validateFixtureManifest, validatePB03Fixture } = fixtureDefinition;
 
 const roots: string[] = [];
 function root() { const value = fs.mkdtempSync(path.join(os.tmpdir(), 'evidence-')); roots.push(value); return value; }
@@ -51,6 +53,98 @@ describe('evidence store', () => {
     fs.symlinkSync('real.json', path.join(directory, 'link.json'));
     expect(() => createEvidenceRef(directory, 'link.json')).toThrow('symlink');
     expect(() => readEvidence(directory, { path: 'real.json', sha256: 'a'.repeat(64), mediaType: 'application/json' })).toThrow('digest');
+  });
+});
+
+describe('PB-04 immutable asset anchors', () => {
+  const fixtureRoot = path.resolve(import.meta.dirname, '../../evidence/parity-baseline/fixtures');
+  const read = (name: string) => fs.readFileSync(path.join(fixtureRoot, name), 'utf8');
+  const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
+  const deeplyFrozen = (value: unknown): boolean => value === null || typeof value !== 'object'
+    || Object.isFrozen(value) && Reflect.ownKeys(value).every((key) => deeplyFrozen((value as Record<PropertyKey, unknown>)[key]));
+  const validManifest = () => {
+    const manifest = JSON.parse(read('manifest.json'));
+    expect(validateFixtureManifest(fixtureRoot, manifest)).toEqual(manifest);
+    return manifest;
+  };
+
+  it('accepts the exact ordered fixture and event manifest with pinned asset bytes', () => {
+    const manifest = JSON.parse(read('manifest.json'));
+    expect(validateFixtureManifest(fixtureRoot, manifest)).toEqual(manifest);
+    expect(manifest.fixtures.map(({ identity, path: assetPath, sha256 }: any) => [identity, assetPath, sha256])).toEqual([
+      ['PB-01', 'PB-01.json', '86c48b13224da2de87e258bd6681187b73b46f147eca947ffe0aa25c613f3093'],
+      ['PB-02', 'PB-02.json', 'c7312d5567953b6357221b216aeaec1635d634a3a19e16ae89f0b61bbad15cc8'],
+      ['PB-03', 'PB-03.json', 'f877f8167aab9c0512c441c3e1c68045393b74945ee1e7805997806659ae6dda'],
+      ['PB-04', 'PB-04.json', '9cc8bbc646ad530051b0e919c9c62617397b0012a678f8e89b8c91e5d401b972'],
+    ]);
+    expect(manifest.eventSeeds.map(({ owner, caseId, eventSeedId, path: assetPath, sha256 }: any) => [owner, caseId, eventSeedId, assetPath, sha256])).toEqual([
+      ['PB-04', 'single-foreground', 'pb-04-single-foreground-events-v1',
+        'events/pb-04/single-foreground.json', 'bbad31dcfcaa968a7bdd830bae26cb00faa9df323c9d6e998ae02b000af82999'],
+      ['PB-04', 'serial-foreground', 'pb-04-serial-foreground-events-v1',
+        'events/pb-04/serial-foreground.json', 'd1da6c5fb275a1c8b34ec45f1fdf7e2fb847882c35ab9e3f6899d4fad44beb8c'],
+      ['PB-04', 'bounded-concurrency', 'pb-04-bounded-concurrency-events-v1',
+        'events/pb-04/bounded-concurrency.json', 'dd5c2fa54499579cbeb52f9cc1f0ca64b8c2053da4f3c65010b5ae611bf28373'],
+      ['PB-04', 'mixed-background', 'pb-04-mixed-background-events-v1',
+        'events/pb-04/mixed-background.json', 'b71e954d3586bebf2f4f679e3b13d615abec5daab0c8f5367ec5c1bf86ea5f17'],
+    ]);
+    expect(JSON.parse(read('PB-04.json')).cases).toHaveLength(4);
+    for (const event of manifest.eventSeeds) expect(JSON.parse(read(event.path)).events).not.toHaveLength(0);
+  });
+
+  it('keeps external anchors closure-private', () => {
+    expect(Object.keys(fixtureDefinition).sort()).toEqual(['validateFixtureManifest', 'validatePB03Fixture']);
+  });
+
+  it('returns fresh, deeply frozen manifest snapshots without aliases', () => {
+    const input = validManifest();
+    const first = validateFixtureManifest(fixtureRoot, input);
+    const second = validateFixtureManifest(fixtureRoot, clone(input));
+    expect(deeplyFrozen(first)).toBe(true); expect(deeplyFrozen(second)).toBe(true);
+    expect(second).toEqual(first); expect(second).not.toBe(first);
+    input.eventSeeds[0].sha256 = 'a'.repeat(64);
+    expect(first.eventSeeds[0].sha256).toBe('bbad31dcfcaa968a7bdd830bae26cb00faa9df323c9d6e998ae02b000af82999');
+  });
+
+  it('rejects coordinated PB-04 bytes and manifest digest substitution against external anchors', () => {
+    const directory = root();
+    fs.cpSync(fixtureRoot, directory, { recursive: true });
+    fs.appendFileSync(path.join(directory, 'PB-04.json'), ' ');
+    const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'manifest.json'), 'utf8'));
+    manifest.fixtures[3].sha256 = createHash('sha256').update(fs.readFileSync(path.join(directory, 'PB-04.json'))).digest('hex');
+    fs.writeFileSync(path.join(directory, 'manifest.json'), JSON.stringify(manifest));
+    expect(() => validateFixtureManifest(directory, manifest)).toThrow('invalid PB-03 fixture');
+  });
+
+  it('rejects coordinated event, PB-04, and manifest digest substitution against external anchors', () => {
+    const directory = root();
+    fs.cpSync(fixtureRoot, directory, { recursive: true });
+    const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'manifest.json'), 'utf8'));
+    const fixture = JSON.parse(fs.readFileSync(path.join(directory, 'PB-04.json'), 'utf8'));
+    const event = manifest.eventSeeds[0];
+    fs.appendFileSync(path.join(directory, event.path), ' ');
+    const eventDigest = createHash('sha256').update(fs.readFileSync(path.join(directory, event.path))).digest('hex');
+    fixture.cases[0].eventSeedDigest = eventDigest;
+    fs.writeFileSync(path.join(directory, 'PB-04.json'), JSON.stringify(fixture));
+    event.sha256 = eventDigest;
+    manifest.fixtures[3].sha256 = createHash('sha256').update(fs.readFileSync(path.join(directory, 'PB-04.json'))).digest('hex');
+    fs.writeFileSync(path.join(directory, 'manifest.json'), JSON.stringify(manifest));
+    expect(() => validateFixtureManifest(directory, manifest)).toThrow('invalid PB-03 fixture');
+  });
+
+  it.each([
+    ['reordered fixtures', (value: any) => value.fixtures.reverse()],
+    ['reordered event seeds', (value: any) => value.eventSeeds.reverse()],
+    ['wrong event owner', (value: any) => value.eventSeeds[0].owner = 'PB-03'],
+    ['wrong event path', (value: any) => value.eventSeeds[0].path = 'events/pb-04/serial-foreground.json'],
+    ['wrong event seed id', (value: any) => value.eventSeeds[0].eventSeedId = 'wrong'],
+    ['wrong event SHA', (value: any) => value.eventSeeds[0].sha256 = 'a'.repeat(64)],
+    ['missing fixture', (value: any) => value.fixtures.pop()],
+    ['extra fixture', (value: any) => value.fixtures.push(clone(value.fixtures[0]))],
+    ['missing event', (value: any) => value.eventSeeds.pop()],
+    ['extra event', (value: any) => value.eventSeeds.push(clone(value.eventSeeds[0]))],
+  ])('rejects fresh valid manifest precursor: %s', (_label, mutate) => {
+    const value = validManifest(); mutate(value);
+    expect(() => validateFixtureManifest(fixtureRoot, value)).toThrow('invalid PB-03 fixture');
   });
 });
 
