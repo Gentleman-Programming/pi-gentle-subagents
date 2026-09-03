@@ -3,7 +3,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 const fields=['schemaVersion','identity','fixtureId','procedureId','normalizationId','cases','seeds'], selectors=['parsedAgents','parsedSubagents','frontmatter','modelSettings','effortSettings','defaults','numericValues','sessionResources','continuation','tools','shortcuts','precedence','provenance','diagnostics'], cases=['global-only','project-only','project-over-global','malformed-source','shadowed-source'];
 const seeds=[['fs/pb-03/global/agents/global.md','global-agent-markdown','eeb3fe9d61cacbb7c56ba3407802ee1e7f8bfacae1962f7f87ed74f32f4b5741'],['fs/pb-03/global/profiles.json','global-profiles','22c01b543789973f4033aed47ce3a55f79afc17d9376c384aef09ead4b0abb44'],['fs/pb-03/global/settings.json','global-settings','76dc87110ef415d992564799891222f01dd01089ef221e084a09444a3a4ddb10'],['fs/pb-03/project/.pi/agents/malformed.md','malformed-source','92b921e41332497c8a7cffe3e8ea3f19dd5a4af8d03d0d796741027bffba9b07'],['fs/pb-03/project/.pi/agents/project.md','project-agent-markdown','57f5dd35a33bc3c15f8ed3c351b750a0b1504ddb478fb031d3620b565809e9c0'],['fs/pb-03/project/.pi/agents/shadowed.md','shadowed-source','77bedf9b500110d7f6aea7ae14c5b355f0253557cde0e6ee50ccc67334f6b3bc'],['fs/pb-03/project/.pi/profiles.json','project-profiles','1ad751cc91d318a07cddb4f6d1e010f2f7b97331ddf670b4ca31872fa934a4f1'],['fs/pb-03/project/.pi/settings.json','project-settings','d322ecd7597bfbdfc56ff1e2c01bf3cc3ec70c34c88cf21a6f3e57c09accdd32']];
-const fail=()=>{throw new TypeError('invalid PB-03 fixture')}, text=value=>typeof value==='string'&&value.length>0&&!/[\u0000-\u001f\u007f]/u.test(value), digest=bytes=>createHash('sha256').update(bytes).digest('hex'), safePath=value=>text(value)&&!value.startsWith('/')&&!value.includes('\\')&&!value.split('/').some(part=>!part||part==='.'||part==='..');
+const hashApply=Reflect.apply, hashUpdate=createHash('sha256').update, hashDigest=createHash('sha256').digest;
+const fail=()=>{throw new TypeError('invalid PB-03 fixture')};
+const text=value=>typeof value==='string'&&value.length>0&&!/[\u0000-\u001f\u007f]/u.test(value);
+const digest=(bytes)=>{const hash=createHash('sha256');hashApply(hashUpdate,hash,[bytes]);return hashApply(hashDigest,hash,['hex']);};
+const safePath=value=>text(value)&&!value.startsWith('/')&&!value.includes('\\')
+  &&!value.split('/').some(part=>!part||part==='.'||part==='..');
 const exact=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).length===keys.length&&keys.every(key=>Object.hasOwn(value,key));
 function copy(value,seen=new Set()) {
  if(value===null||typeof value==='string'||typeof value==='boolean') return value;
@@ -52,10 +57,124 @@ const eventSeedManifestAnchors = Object.freeze([
   ],
 ].map(Object.freeze));
 
+const pb05Apply = Reflect.apply;
+const pb05Freeze = Object.freeze;
+const pb05Keys = Object.keys;
+const pb05Error = TypeError;
+const pb05Fs = pb05Freeze({ close: fs.closeSync, fstat: fs.fstatSync, lstat: fs.lstatSync,
+  open: fs.openSync, read: fs.readFileSync, realpath: fs.realpathSync.native, noFollow: fs.constants.O_NOFOLLOW,
+  readOnly: fs.constants.O_RDONLY });
+const pb05Path = pb05Freeze({ isAbsolute: path.isAbsolute, join: path.join, resolve: path.resolve });
+const pb05Buffer = pb05Freeze({ allocate: Buffer.allocUnsafe, isBuffer: Buffer.isBuffer, owner: Buffer,
+  length: Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), 'byteLength').get,
+  set: Uint8Array.prototype.set });
+const pb05Hash = pb05Freeze({
+  create: createHash,
+  digest: createHash('sha256').digest,
+  update: createHash('sha256').update,
+});
+const pb05Json = JSON, pb05Parse = JSON.parse;
+const pb05Decode = TextDecoder.prototype.decode, pb05TextDecoder = TextDecoder;
+const pb05Directory = fs.Stats.prototype.isDirectory;
+const pb05File = fs.Stats.prototype.isFile;
+const pb05Link = fs.Stats.prototype.isSymbolicLink;
+const pb05StartsWith = String.prototype.startsWith;
+const pb05Files = pb05Freeze(['manifest.json', 'PB-05.json', pb05SeedAnchor[0]]);
+
+const pb05Call = (callable, receiver, args) => pb05Apply(callable, receiver, args);
+const pb05Fail = () => { throw new pb05Error('invalid PB-03 fixture'); };
+const pb05Same = (left, right) => left.real === right.real
+  && left.dev === right.dev
+  && left.ino === right.ino
+  && left.size === right.size;
+const pb05Digest = (bytes) => {
+  const hash = pb05Call(pb05Hash.create, undefined, ['sha256']);
+  pb05Call(pb05Hash.update, hash, [bytes]); return pb05Call(pb05Hash.digest, hash, ['hex']);
+};
+const pb05CopyBuffer = (value) => {
+  if (!pb05Call(pb05Buffer.isBuffer, pb05Buffer.owner, [value])) pb05Fail();
+  let length;
+  try { length = pb05Call(pb05Buffer.length, value, []); } catch { pb05Fail(); }
+  const copy = pb05Call(pb05Buffer.allocate, undefined, [length]);
+  pb05Call(pb05Buffer.set, copy, [value]);
+  return copy;
+};
+const pb05Frozen = (value) => {
+  if (value && typeof value === 'object') {
+    const keys = pb05Call(pb05Keys, Object, [value]);
+    for (let index = 0; index < keys.length; index += 1) pb05Frozen(value[keys[index]]);
+    pb05Call(pb05Freeze, Object, [value]);
+  }
+  return value;
+};
+function pb05Root(root) {
+  if (typeof root !== 'string' || !root || !pb05Call(pb05Path.isAbsolute, pb05Path, [root])) pb05Fail();
+  const lexical = pb05Call(pb05Path.resolve, pb05Path, [root]);
+  const stat = pb05Call(pb05Fs.lstat, fs, [lexical]);
+  if (pb05Call(pb05Link, stat, []) || !pb05Call(pb05Directory, stat, [])) pb05Fail();
+  const real = pb05Call(pb05Fs.realpath, fs, [lexical]), resolved = pb05Call(pb05Fs.lstat, fs, [real]);
+  if (pb05Call(pb05Link, resolved, []) || !pb05Call(pb05Directory, resolved, [])
+    || !pb05Same(
+      { real, dev: stat.dev, ino: stat.ino, size: stat.size },
+      { real, dev: resolved.dev, ino: resolved.ino, size: resolved.size },
+    )) pb05Fail();
+  return { lexical, real, dev: stat.dev, ino: stat.ino, size: stat.size };
+}
+function pb05Route(root, file) {
+  const inspect = (candidate, directory) => {
+    const stat = pb05Call(pb05Fs.lstat, fs, [candidate]);
+    if (pb05Call(pb05Link, stat, []) || !pb05Call(directory ? pb05Directory : pb05File, stat, [])) pb05Fail();
+    const real = pb05Call(pb05Fs.realpath, fs, [candidate]);
+    if (!pb05Call(pb05StartsWith, real, [`${root.real}/`])) pb05Fail();
+    return { real, dev: stat.dev, ino: stat.ino, size: stat.size };
+  };
+  const route = pb05Call(pb05Path.join, pb05Path, [root.lexical, file]);
+  const first = pb05Call(pb05Path.join, pb05Path, [root.lexical, 'fs']), second = pb05Call(pb05Path.join, pb05Path, [first, 'pb-05']);
+  const intermediates = file === pb05Files[2]
+    ? [[first, inspect(first, true)], [second, inspect(second, true)]]
+    : [];
+  const beforeRoot = pb05Root(root.lexical), before = inspect(route, false); let fd; let bytes; let error;
+  if (!pb05Same(root, beforeRoot)) pb05Fail();
+  try {
+    fd = pb05Call(pb05Fs.open, fs, [route, pb05Fs.readOnly | pb05Fs.noFollow]);
+    const opened = pb05Call(pb05Fs.fstat, fs, [fd]);
+    if (!pb05Call(pb05File, opened, []) || opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size) pb05Fail();
+    const read = pb05Call(pb05Fs.read, fs, [fd]);
+    if (!pb05Call(pb05Buffer.isBuffer, pb05Buffer.owner, [read])) pb05Fail();
+    bytes = pb05CopyBuffer(read);
+    const afterOpened = pb05Call(pb05Fs.fstat, fs, [fd]);
+    const afterRoot = pb05Root(root.lexical), after = inspect(route, false);
+    if (!pb05Same(root, beforeRoot) || !pb05Same(root, afterRoot) || !pb05Same(before, after)
+      || opened.dev !== afterOpened.dev || opened.ino !== afterOpened.ino
+      || opened.size !== afterOpened.size) pb05Fail();
+    for (let index = 0; index < intermediates.length; index += 1) if (!pb05Same(intermediates[index][1], inspect(intermediates[index][0], true))) pb05Fail();
+  } catch (caught) { error = caught; }
+  finally { if (fd !== undefined) try { pb05Call(pb05Fs.close, fs, [fd]); } catch (caught) { if (!error) error = caught; } }
+  if (error) throw error; return bytes;
+}
+export function loadPB05Authority(root) {
+  try {
+    const rootState = pb05Root(root), manifestBytes = pb05Route(rootState, pb05Files[0]);
+    if (pb05Digest(manifestBytes) !== pb04FullManifestDigest) pb05Fail();
+    const decode = (bytes) => pb05Call(pb05Decode, new pb05TextDecoder('utf-8', { fatal: true }), [bytes]);
+    const manifest = pb05Call(pb05Parse, pb05Json, [decode(manifestBytes)]), fixtureBytes = pb05Route(rootState, pb05Files[1]), seedBytes = pb05Route(rootState, pb05Files[2]);
+    const manifestDigest = pb05Digest(manifestBytes), fixtureDigest = pb05Digest(fixtureBytes), seedDigest = pb05Digest(seedBytes);
+    if (fixtureDigest !== fixtureManifestAnchors[4][2] || seedDigest !== pb05SeedAnchor[2]
+      || manifestDigest === fixtureDigest || manifestDigest === seedDigest
+      || fixtureDigest === seedDigest) pb05Fail();
+    return pb05Frozen({
+      manifest,
+      fixture: pb05Call(pb05Parse, pb05Json, [decode(fixtureBytes)]),
+      seed: pb05Call(pb05Parse, pb05Json, [decode(seedBytes)]),
+      fixtureDigest,
+      seedDigest,
+    });
+  } catch { return pb05Fail(); }
+}
+pb05Call(pb05Freeze, Object, [loadPB05Authority]);
+
 const authorityPaths = Object.freeze([
-  'manifest.json',
-  ...fixtureManifestAnchors.map(([, file]) => file),
-  pb05SeedAnchor[0],
+  ...fixtureManifestAnchors.slice(0, 4).map(([, file]) => file),
   ...eventSeedManifestAnchors.map(([, , , file]) => file),
 ]);
 
@@ -67,16 +186,15 @@ const exactOrdered = (value, keys) => {
 
 function readAuthorityBytes(root) {
   if (!text(root)) fail();
-  return new Map(
-    authorityPaths.map((file) => [file, fs.readFileSync(path.join(root, file))]),
-  );
+  const rootState = pb05Root(root);
+  return new Map(authorityPaths.map((file) => [file, pb05Route(rootState, file)]));
 }
 
-function validateFixtureEntry(item, index, bytes) {
+function validateFixtureEntry(item, index, bytes, pb05) {
   const [identity, file, sha256] = fixtureManifestAnchors[index];
   if (!exactOrdered(item, ['identity', 'path', 'sha256'])) fail();
   if (item.identity !== identity || item.path !== file || item.sha256 !== sha256) fail();
-  if (digest(bytes.get(file)) !== sha256) fail();
+  if ((index === 4 ? pb05.fixtureDigest : digest(bytes.get(file))) !== sha256) fail();
 }
 
 function validateEventSeedEntry(item, index, bytes) {
@@ -88,16 +206,16 @@ function validateEventSeedEntry(item, index, bytes) {
 
 export function validateFixtureManifest(root, input) {
   try {
+    const pb05 = loadPB05Authority(root);
     const bytes = readAuthorityBytes(root);
     const value = copy(input);
-    if (digest(bytes.get(pb05SeedAnchor[0])) !== pb05SeedAnchor[2]) fail();
-    if (JSON.parse(bytes.get(pb05SeedAnchor[0])).seedId !== pb05SeedAnchor[1]) fail();
+    if (pb05.seed.seedId !== pb05SeedAnchor[1]) fail();
     if (!exactOrdered(value, ['schemaVersion', 'fixtures', 'eventSeeds'])) fail();
     if (value.schemaVersion !== 1 || !Array.isArray(value.fixtures)) fail();
     if (!Array.isArray(value.eventSeeds)) fail();
     if (value.fixtures.length !== fixtureManifestAnchors.length) fail();
     if (value.eventSeeds.length !== eventSeedManifestAnchors.length) fail();
-    value.fixtures.forEach((item, index) => validateFixtureEntry(item, index, bytes));
+    value.fixtures.forEach((item, index) => validateFixtureEntry(item, index, bytes, pb05));
     value.eventSeeds.forEach((item, index) => validateEventSeedEntry(item, index, bytes));
     return frozen(value);
   } catch {
