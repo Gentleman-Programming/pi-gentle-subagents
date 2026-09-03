@@ -116,7 +116,12 @@ describe('PB-04 immutable asset anchors', () => {
   });
 
   it('keeps external anchors closure-private', () => {
-    expect(Object.keys(fixtureDefinition).sort()).toEqual(['validateFixtureManifest', 'validatePB03Fixture', 'validatePB04Fixture']);
+    expect(Object.keys(fixtureDefinition).sort()).toEqual(['loadPB05Authority', 'validateFixtureManifest', 'validatePB03Fixture', 'validatePB04Fixture']);
+  });
+
+  it('freezes the exported PB-05 authority loader without changing its result', () => {
+    expect(Object.isFrozen(fixtureDefinition.loadPB05Authority)).toBe(true);
+    expect(fixtureDefinition.loadPB05Authority(fixtureRoot).fixture.identity).toBe('PB-05');
   });
 
   it('returns fresh, deeply frozen manifest snapshots without aliases', () => {
@@ -127,6 +132,250 @@ describe('PB-04 immutable asset anchors', () => {
     expect(second).toEqual(first); expect(second).not.toBe(first);
     input.eventSeeds[0].sha256 = 'a'.repeat(64);
     expect(first.eventSeeds[0].sha256).toBe('bbad31dcfcaa968a7bdd830bae26cb00faa9df323c9d6e998ae02b000af82999');
+  });
+
+  const capturedAuthority = async (tag: string, configure: (saved: any) => void) => {
+    const saved = { close: fs.closeSync, fstat: fs.fstatSync, lstat: fs.lstatSync, open: fs.openSync,
+      read: fs.readFileSync, realpath: fs.realpathSync, native: fs.realpathSync.native, decode: TextDecoder.prototype.decode, parse: JSON.parse };
+    try {
+      configure(saved);
+      const moduleUrl = new URL(`../../scripts/parity-baseline/lib/fixture-definition.mjs?${tag}`, import.meta.url).href;
+      return await import(moduleUrl) as typeof fixtureDefinition;
+    } finally {
+      fs.closeSync = saved.close; fs.fstatSync = saved.fstat; (fs as { lstatSync: typeof fs.lstatSync }).lstatSync = saved.lstat;
+      fs.openSync = saved.open; fs.readFileSync = saved.read; fs.realpathSync = saved.realpath; fs.realpathSync.native = saved.native;
+      TextDecoder.prototype.decode = saved.decode; JSON.parse = saved.parse; vi.resetModules();
+    }
+  };
+
+  it('reads and closes the three private PB-05 authority files in order with fresh frozen data', async () => {
+    const directory = root(); fs.cpSync(fixtureRoot, directory, { recursive: true });
+    const reads: string[] = [], opened: Record<number, string> = {}; let closes = 0;
+    const { loadPB05Authority } = await capturedAuthority('pb05-order', (saved) => {
+      (fs as any).readFileSync = (fd: number) => { reads.push(path.relative(directory, opened[fd])); return saved.read(fd); };
+      (fs as any).openSync = (file: string, flags: number) => {
+        const fd = saved.open(file, flags); opened[fd] = file; return fd;
+      }; (fs as any).closeSync = (fd: number) => { closes += 1; return saved.close(fd); };
+    });
+    const first = loadPB05Authority(directory), second = loadPB05Authority(directory);
+    expect(first).not.toBe(second); expect(deeplyFrozen(first)).toBe(true);
+    expect(reads).toEqual(['manifest.json', 'PB-05.json', 'fs/pb-05/history-seed.json', 'manifest.json', 'PB-05.json', 'fs/pb-05/history-seed.json']); expect(closes).toBe(6);
+    expect(first.fixture).not.toBe(second.fixture); expect(first.seed).not.toBe(second.seed);
+  });
+
+  it('authenticates manifest bytes before decode, parse, or later authority reads', async () => {
+    const directory = root(); fs.cpSync(fixtureRoot, directory, { recursive: true });
+    fs.appendFileSync(path.join(directory, 'manifest.json'), ' ');
+    let manifestReads = 0, laterReads = 0, decodes = 0, parses = 0;
+    const { loadPB05Authority } = await capturedAuthority('pb05-manifest-first', (saved) => {
+      (fs as any).readFileSync = (fd: number) => {
+        if (manifestReads === 0) manifestReads += 1; else laterReads += 1;
+        return saved.read(fd);
+      };
+      TextDecoder.prototype.decode = function (...args: any[]) { decodes += 1; return saved.decode.apply(this, args); };
+      JSON.parse = (...args: any[]) => { parses += 1; return saved.parse(...args); };
+    });
+    expect(() => loadPB05Authority(directory)).toThrow('invalid PB-03 fixture');
+    expect({ manifestReads, laterReads, decodes, parses }).toEqual({
+      manifestReads: 1, laterReads: 0, decodes: 0, parses: 0,
+    });
+  });
+
+  it('rejects non-Buffer reader values without coercion and always closes', async () => {
+    const directory = root(); fs.cpSync(fixtureRoot, directory, { recursive: true });
+    let hostile = false, closes = 0, coercions = 0;
+    const poison = { toString() { coercions += 1; return 'bytes'; }, valueOf() { coercions += 1; return 'bytes'; } };
+    const values = [() => 'not bytes', () => new Uint8Array([1]), () => poison, () => new Proxy(Buffer.from('{}'), {})];
+    for (const create of values) {
+      const { loadPB05Authority } = await capturedAuthority(`pb05-non-buffer-${closes}`, (saved) => {
+        (fs as any).readFileSync = (fd: number) => hostile ? create() : saved.read(fd);
+        (fs as any).closeSync = (fd: number) => { closes += 1; return saved.close(fd); };
+      });
+      expect(loadPB05Authority(directory).fixture.identity).toBe('PB-05'); hostile = true;
+      expect(() => loadPB05Authority(directory)).toThrow('invalid PB-03 fixture'); hostile = false;
+    }
+    expect([coercions, closes]).toEqual([0, 16]);
+  });
+
+  it('copies reader buffers before close without own or prototype coercion', async () => {
+    const directory = root(); fs.cpSync(fixtureRoot, directory, { recursive: true }); let bytes: Buffer | undefined;
+    const decoy = Buffer.from([0, 127, 128, 255]); let coercions = 0, ownPoison = true;
+    const { loadPB05Authority } = await capturedAuthority('pb05-buffer-alias', (saved) => {
+      (fs as any).readFileSync = (fd: number) => {
+        bytes = saved.read(fd);
+        if (ownPoison) Object.defineProperties(bytes, {
+          valueOf: { value: () => { coercions += 1; return decoy; } },
+          [Symbol.toPrimitive]: { value: () => { coercions += 1; return 'bytes'; } },
+        });
+        return bytes;
+      };
+      (fs as any).closeSync = (fd: number) => { const result = saved.close(fd); bytes?.fill(0); return result; };
+    });
+    expect(loadPB05Authority(directory).seed.seedId).toBe('pb-05-history-seed-v1');
+    const savedValueOf = Buffer.prototype.valueOf, savedPrimitive = Buffer.prototype[Symbol.toPrimitive];
+    try {
+      ownPoison = false;
+      Buffer.prototype.valueOf = () => { coercions += 1; return decoy; };
+      Buffer.prototype[Symbol.toPrimitive] = () => { coercions += 1; return 'bytes'; };
+      expect(loadPB05Authority(directory).seed.seedId).toBe('pb-05-history-seed-v1');
+    } finally {
+      Buffer.prototype.valueOf = savedValueOf;
+      Buffer.prototype[Symbol.toPrimitive] = savedPrimitive;
+    }
+    expect(Array.from(decoy, (byte) => byte > 127 ? byte - 256 : byte)).toEqual([0, 127, -128, -1]);
+    expect(coercions).toBe(0);
+  });
+
+  it.each([
+    ['root replacement', 4], ['root replacement after manifest close', 4],
+    ['pre-open file replacement', 5], ['post-read file replacement', 5],
+  ])('rejects %s at its named identity seam and closes every opened descriptor', async (seam, expectedCloses) => {
+    const directory = root(); fs.cpSync(fixtureRoot, directory, { recursive: true });
+    const opened: Record<number, string> = {}; let armed = false, reads = 0, closes = 0, seamHits = 0;
+    const { loadPB05Authority } = await capturedAuthority(`pb05-${seam}`, (saved) => {
+      (fs as any).openSync = (file: string, flags: number) => {
+        if (armed && seam === 'pre-open file replacement' && file.endsWith('PB-05.json')) {
+          seamHits += 1; fs.renameSync(file, `${file}.before`); fs.writeFileSync(file, '{}');
+        }
+        const fd = saved.open(file, flags); opened[fd] = file;
+        if (armed && seam === 'root replacement' && seamHits === 0) {
+          seamHits += 1; const previous = `${directory}.previous`; fs.renameSync(directory, previous);
+          roots.push(previous); fs.cpSync(previous, directory, { recursive: true });
+        }
+        return fd;
+      };
+      (fs as any).readFileSync = (fd: number) => {
+        const bytes = saved.read(fd);
+        if (armed && seam === 'post-read file replacement' && ++reads === 2) {
+          seamHits += 1; const asset = path.join(directory, 'PB-05.json'); fs.renameSync(asset, `${asset}.after`); fs.writeFileSync(asset, '{}');
+        }
+        return bytes;
+      };
+      (fs as any).closeSync = (fd: number) => {
+        closes += 1; const result = saved.close(fd);
+        if (armed && seam === 'root replacement after manifest close' && seamHits === 0
+          && opened[fd].endsWith('manifest.json')) {
+          seamHits += 1; const previous = `${directory}.previous`; fs.renameSync(directory, previous);
+          roots.push(previous); fs.cpSync(previous, directory, { recursive: true });
+        }
+        return result;
+      };
+    });
+    expect(loadPB05Authority(directory).fixture.identity).toBe('PB-05'); armed = true;
+    expect(() => loadPB05Authority(directory)).toThrow('invalid PB-03 fixture');
+    expect([seamHits, closes]).toEqual([1, expectedCloses]);
+  });
+
+  it('closes a descriptor when the captured close performs the real close then throws', async () => {
+    const directory = root(); fs.cpSync(fixtureRoot, directory, { recursive: true }); let armed = false, closes = 0;
+    const { loadPB05Authority } = await capturedAuthority('pb05-close-throws', (saved) => {
+      (fs as any).closeSync = (fd: number) => { closes += 1; const result = saved.close(fd); if (armed) throw new Error('after close'); return result; };
+    });
+    expect(loadPB05Authority(directory).fixture.identity).toBe('PB-05'); armed = true;
+    expect(() => loadPB05Authority(directory)).toThrow('invalid PB-03 fixture'); expect(closes).toBe(4);
+  });
+
+  it.each([
+    ['symlink', (asset: string) => { fs.renameSync(asset, `${asset}.real`); fs.symlinkSync('PB-05.json.real', asset); }],
+    ['directory', (asset: string) => { fs.renameSync(asset, `${asset}.real`); fs.mkdirSync(asset); }],
+  ])('rejects a non-regular PB-05 authority %s after a valid precursor', (_label, mutate) => {
+    const directory = root(); fs.cpSync(fixtureRoot, directory, { recursive: true });
+    const asset = path.join(directory, 'PB-05.json'), manifest = JSON.parse(fs.readFileSync(path.join(directory, 'manifest.json'), 'utf8'));
+    expect(validateFixtureManifest(directory, manifest)).toEqual(manifest); mutate(asset);
+    expect(() => validateFixtureManifest(directory, manifest)).toThrow('invalid PB-03 fixture');
+  });
+
+  it.each([
+    ['the history seed leaf', (directory: string) => {
+      const asset = path.join(directory, 'fs/pb-05/history-seed.json');
+      fs.renameSync(asset, `${asset}.real`);
+      fs.symlinkSync('history-seed.json.real', asset);
+    }],
+    ['the history seed intermediate directory', (directory: string) => {
+      const asset = path.join(directory, 'fs/pb-05');
+      fs.renameSync(asset, `${asset}.real`);
+      fs.symlinkSync('pb-05.real', asset);
+    }],
+    ['the lexical fixture root', (directory: string) => {
+      const real = `${directory}.real`;
+      fs.renameSync(directory, real);
+      roots.push(real);
+      fs.symlinkSync(real, directory);
+    }],
+  ])('rejects a PB-05 authority symlink at %s', (_label, mutate) => {
+    const directory = root();
+    fs.cpSync(fixtureRoot, directory, { recursive: true });
+    mutate(directory);
+    const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'manifest.json'), 'utf8'));
+    expect(() => validateFixtureManifest(directory, manifest)).toThrow('invalid PB-03 fixture');
+  });
+
+  it('runs the PB-05 loader through hostile captured-boundary replacements', async () => {
+    const directory = root(); fs.cpSync(fixtureRoot, directory, { recursive: true });
+    const moduleUrl = new URL('../../scripts/parity-baseline/lib/fixture-definition.mjs?pb05-captures', import.meta.url).href;
+    const { loadPB05Authority: captured } = await import(moduleUrl), hash = createHash('sha256'); let result: any;
+    const saved = {
+      close: fs.closeSync, fstat: fs.fstatSync, lstat: fs.lstatSync, open: fs.openSync,
+      read: fs.readFileSync, realpath: fs.realpathSync, join: path.join, resolve: path.resolve,
+      absolute: path.isAbsolute, bufferAllocate: Buffer.allocUnsafe, bufferIsBuffer: Buffer.isBuffer,
+      typedSet: Uint8Array.prototype.set, decode: TextDecoder.prototype.decode,
+      starts: String.prototype.startsWith, directory: fs.Stats.prototype.isDirectory,
+      file: fs.Stats.prototype.isFile, link: fs.Stats.prototype.isSymbolicLink, parse: JSON.parse,
+      keys: Object.keys, freeze: Object.freeze, apply: Reflect.apply,
+      update: Object.getPrototypeOf(hash).update, digest: Object.getPrototypeOf(hash).digest,
+    };
+    try {
+      const replaced = [[fs, 'closeSync'], [fs, 'fstatSync'], [fs, 'lstatSync'], [fs, 'openSync'], [fs, 'readFileSync'],
+        [fs, 'realpathSync'], [path, 'join'], [path, 'resolve'], [path, 'isAbsolute']] as const;
+      for (const [owner, name] of replaced) (owner as any)[name] = () => { throw new Error(name); };
+      TextDecoder.prototype.decode = () => { throw new Error('replaced'); }; JSON.parse = () => { throw new Error('replaced'); };
+      String.prototype.startsWith = () => { throw new Error('replaced'); };
+      Buffer.allocUnsafe = (size: number) => saved.bufferAllocate(size);
+      Buffer.isBuffer = (_value: unknown): _value is Buffer => { throw new Error('replaced'); }; Uint8Array.prototype.set = () => { throw new Error('replaced'); };
+      Object.keys = () => { throw new Error('replaced'); }; Object.freeze = () => { throw new Error('replaced'); };
+      Reflect.apply = () => { throw new Error('replaced'); }; Object.getPrototypeOf(hash).update = () => { throw new Error('replaced'); };
+      Object.getPrototypeOf(hash).digest = () => { throw new Error('replaced'); }; fs.Stats.prototype.isDirectory = () => { throw new Error('replaced'); };
+      fs.Stats.prototype.isFile = () => { throw new Error('replaced'); }; fs.Stats.prototype.isSymbolicLink = () => { throw new Error('replaced'); }; result = captured(directory);
+    } finally {
+      fs.closeSync = saved.close; fs.fstatSync = saved.fstat; (fs as { lstatSync: typeof fs.lstatSync }).lstatSync = saved.lstat; fs.openSync = saved.open;
+      fs.readFileSync = saved.read; fs.realpathSync = saved.realpath; path.join = saved.join; path.resolve = saved.resolve;
+      path.isAbsolute = saved.absolute; Buffer.allocUnsafe = saved.bufferAllocate; Buffer.isBuffer = saved.bufferIsBuffer;
+      Uint8Array.prototype.set = saved.typedSet; TextDecoder.prototype.decode = saved.decode; JSON.parse = saved.parse;
+      String.prototype.startsWith = saved.starts; Object.keys = saved.keys; Object.freeze = saved.freeze;
+      Reflect.apply = saved.apply; Object.getPrototypeOf(hash).update = saved.update; Object.getPrototypeOf(hash).digest = saved.digest;
+      fs.Stats.prototype.isDirectory = saved.directory; fs.Stats.prototype.isFile = saved.file; fs.Stats.prototype.isSymbolicLink = saved.link; vi.resetModules();
+    }
+    expect(result.fixture.identity).toBe('PB-05'); expect(result.seed.seedId).toBe('pb-05-history-seed-v1');
+  });
+
+  it('authenticates fatal PB-05 bytes before attempting a second decode or parse', async () => {
+    const directory = root(); fs.cpSync(fixtureRoot, directory, { recursive: true });
+    fs.appendFileSync(path.join(directory, 'PB-05.json'), Buffer.from([0xff])); let decodes = 0, parses = 0;
+    const { validateFixtureManifest: validate } = await capturedAuthority('pb05-fatal-first', (saved) => {
+      TextDecoder.prototype.decode = function (...args: any[]) { decodes += 1; return saved.decode.apply(this, args); };
+      JSON.parse = (...args: any[]) => { parses += 1; return saved.parse(...args); };
+    });
+    const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'manifest.json'), 'utf8'));
+    expect(() => validate(directory, manifest)).toThrow('invalid PB-03 fixture'); expect([decodes, parses]).toEqual([1, 1]);
+  });
+
+  it('rejects PB-05 realpath escape before its open', async () => {
+    const directory = root(), outside = root(), asset = path.join(directory, 'PB-05.json'); fs.cpSync(fixtureRoot, directory, { recursive: true });
+    let armed = false, hits = 0, opens = 0;
+    const { loadPB05Authority } = await capturedAuthority('pb05-realpath-escape', (saved) => {
+      (fs.realpathSync as any).native = (file: string) => armed && file === asset ? (hits += 1, outside) : saved.native(file);
+      (fs as any).openSync = (...args: any[]) => { opens += 1; return saved.open(...args); };
+    });
+    expect(fs.lstatSync(asset).isFile()).toBe(true); expect(loadPB05Authority(directory).fixture.identity).toBe('PB-05'); armed = true;
+    expect(() => loadPB05Authority(directory)).toThrow('invalid PB-03 fixture'); expect([hits, opens]).toEqual([1, 4]);
+  });
+
+  it('rejects duplicate coordinated PB-05 and seed bytes through private digests', () => {
+    const directory = root(); fs.cpSync(fixtureRoot, directory, { recursive: true });
+    const fixture = path.join(directory, 'PB-05.json');
+    const seed = path.join(directory, 'fs/pb-05/history-seed.json');
+    fs.copyFileSync(seed, fixture); fs.copyFileSync(fixture, seed);
+    expect(() => fixtureDefinition.loadPB05Authority(directory)).toThrow('invalid PB-03 fixture');
   });
 
   it('rejects coordinated PB-05 bytes and manifest digest substitution against external anchors', () => {
