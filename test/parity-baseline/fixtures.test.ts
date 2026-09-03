@@ -76,6 +76,7 @@ describe('PB-04 immutable asset anchors', () => {
       ['PB-02', 'PB-02.json', 'c7312d5567953b6357221b216aeaec1635d634a3a19e16ae89f0b61bbad15cc8'],
       ['PB-03', 'PB-03.json', 'f877f8167aab9c0512c441c3e1c68045393b74945ee1e7805997806659ae6dda'],
       ['PB-04', 'PB-04.json', '9cc8bbc646ad530051b0e919c9c62617397b0012a678f8e89b8c91e5d401b972'],
+      ['PB-05', 'PB-05.json', '355e3775f64c6543fb6bce418ec0bac834a271087dcc82898eccf2ad11b5e02e'],
     ]);
     expect(manifest.eventSeeds.map(({ owner, caseId, eventSeedId, path: assetPath, sha256 }: any) => [owner, caseId, eventSeedId, assetPath, sha256])).toEqual([
       ['PB-04', 'single-foreground', 'pb-04-single-foreground-events-v1',
@@ -91,6 +92,29 @@ describe('PB-04 immutable asset anchors', () => {
     for (const event of manifest.eventSeeds) expect(JSON.parse(read(event.path)).events).not.toHaveLength(0);
   });
 
+  it('pins the exact PB-05 fixture and staged history-seed tuple', () => {
+    const fixture = read('PB-05.json'), seed = read('fs/pb-05/history-seed.json');
+    expect(createHash('sha256').update(fixture).digest('hex')).toBe('355e3775f64c6543fb6bce418ec0bac834a271087dcc82898eccf2ad11b5e02e');
+    expect(createHash('sha256').update(seed).digest('hex')).toBe('9e79da443d71b4080fac4e47a3b9bcfd79534bb48e1caa8eaf83782c96ae9e29');
+    expect(JSON.parse(fixture)).toMatchObject({ schemaVersion: 1, identity: 'PB-05', fixtureId: 'pb-05-history-fixture-v1', cases: [
+      { id: 'node-sqlite-crud', runtime: 'node-sqlite', seedPath: 'fs/pb-05/history-seed.json', seedId: 'pb-05-history-seed-v1' },
+      { id: 'bun-sqlite-crud', runtime: 'bun-sqlite' }, { id: 'locked-database', runtime: 'node-sqlite' },
+      { id: 'permission-denied', runtime: 'node-sqlite' },
+    ] });
+    expect(JSON.parse(seed)).toMatchObject({ schemaVersion: 1, seedId: 'pb-05-history-seed-v1', task: { id: 'pb05-task-1' } });
+  });
+
+  it('rejects a history-seed ID mutation through generic manifest validation', () => {
+    const directory = root();
+    fs.cpSync(fixtureRoot, directory, { recursive: true });
+    const seedPath = path.join(directory, 'fs/pb-05/history-seed.json');
+    const seed = JSON.parse(fs.readFileSync(seedPath, 'utf8'));
+    seed.seedId = 'pb-05-history-seed-mutated';
+    fs.writeFileSync(seedPath, JSON.stringify(seed));
+    const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'manifest.json'), 'utf8'));
+    expect(() => validateFixtureManifest(directory, manifest)).toThrow('invalid PB-03 fixture');
+  });
+
   it('keeps external anchors closure-private', () => {
     expect(Object.keys(fixtureDefinition).sort()).toEqual(['validateFixtureManifest', 'validatePB03Fixture', 'validatePB04Fixture']);
   });
@@ -103,6 +127,16 @@ describe('PB-04 immutable asset anchors', () => {
     expect(second).toEqual(first); expect(second).not.toBe(first);
     input.eventSeeds[0].sha256 = 'a'.repeat(64);
     expect(first.eventSeeds[0].sha256).toBe('bbad31dcfcaa968a7bdd830bae26cb00faa9df323c9d6e998ae02b000af82999');
+  });
+
+  it('rejects coordinated PB-05 bytes and manifest digest substitution against external anchors', () => {
+    const directory = root();
+    fs.cpSync(fixtureRoot, directory, { recursive: true });
+    fs.appendFileSync(path.join(directory, 'PB-05.json'), ' ');
+    const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'manifest.json'), 'utf8'));
+    manifest.fixtures[4].sha256 = createHash('sha256').update(fs.readFileSync(path.join(directory, 'PB-05.json'))).digest('hex');
+    fs.writeFileSync(path.join(directory, 'manifest.json'), JSON.stringify(manifest));
+    expect(() => validateFixtureManifest(directory, manifest)).toThrow('invalid PB-03 fixture');
   });
 
   it('rejects coordinated PB-04 bytes and manifest digest substitution against external anchors', () => {

@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "seedId": "pb-05-history-seed-v1",
+  "task": {
+    "id": "pb05-task-1",
+    "agent": "pb05-agent",
+    "mode": "task",
+    "status": "completed",
+    "task": "PB-05 deterministic task",
+    "created_at": "2024-01-02T03:04:05.000Z",
+    "attempt": 1,
+    "last_activity_at": "2024-01-02T03:04:06.000Z",
+    "thread_snapshot": {
+      "version": 1,
+      "source": "events",
+      "items": []
+    }
+  },
+  "attempt": {
+    "task_id": "pb05-task-1",
+    "attempt": 1,
+    "status": "completed",
+    "task": "PB-05 deterministic task",
+    "created_at": "2024-01-02T03:04:05.000Z",
+    "last_activity_at": "2024-01-02T03:04:06.000Z"
+  },
+  "event": {
+    "task_id": "pb05-task-1",
+    "attempt": 1,
+    "status": "completed",
+    "activity": "pb05-complete",
+    "created_at": "2024-01-02T03:04:06.000Z"
+  },
+  "snapshot": {
+    "version": 1,
+    "source": "events",
+    "items": []
+  }
+}

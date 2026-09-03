@@ -20,6 +20,11 @@
       "identity": "PB-04",
       "path": "PB-04.json",
       "sha256": "9cc8bbc646ad530051b0e919c9c62617397b0012a678f8e89b8c91e5d401b972"
+    },
+    {
+      "identity": "PB-05",
+      "path": "PB-05.json",
+      "sha256": "355e3775f64c6543fb6bce418ec0bac834a271087dcc82898eccf2ad11b5e02e"
     }
   ],
   "eventSeeds": [
