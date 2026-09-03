@@ -473,3 +473,124 @@ export function validatePB04Fixture(root, input) {
   }
 }
 Object.freeze(validatePB04Fixture);
+
+const pb05Snapshot = Object.freeze({
+  array: Array.isArray, arrayOwner: Array, arrayPrototype: Array.prototype, data: { enumerable: true, writable: true, configurable: true },
+  define: Object.defineProperty, descriptor: Object.getOwnPropertyDescriptor, extensible: Object.isExtensible, freeze: Object.freeze,
+  integer: Number.isSafeInteger, number: Number.isFinite, numberOwner: Number, objectIs: Object.is, objectOwner: Object, objectPrototype: Object.prototype,
+  every: Array.prototype.every, forEach: Array.prototype.forEach, keys: Reflect.ownKeys, reflectOwner: Reflect, set: Set,
+  setAdd: Set.prototype.add, setHas: Set.prototype.has, prototype: Object.getPrototypeOf, slice: Array.prototype.slice,
+  some: Array.prototype.some, string: String, stringOwner: String, apply: Reflect.apply, error: TypeError,
+});
+const pb05SnapshotCall = (callable, receiver, args) => pb05Snapshot.apply(callable, receiver, args);
+const pb05FixtureKeys = ['schemaVersion', 'identity', 'fixtureId', 'procedureId', 'normalizationId', 'cases'];
+const pb05CaseKeys = ['id', 'runtime', 'seedPath', 'seedId', 'seedDigest'];
+const pb05SeedKeys = ['schemaVersion', 'seedId', 'task', 'attempt', 'event', 'snapshot'];
+const pb05TaskKeys = ['id', 'agent', 'mode', 'status', 'task', 'created_at', 'attempt', 'last_activity_at', 'thread_snapshot'];
+const pb05AttemptKeys = ['task_id', 'attempt', 'status', 'task', 'created_at', 'last_activity_at'];
+const pb05EventKeys = ['task_id', 'attempt', 'status', 'activity', 'created_at'];
+const pb05ThreadKeys = ['version', 'source', 'items'];
+const pb05ExpectedCases = [
+  ['node-sqlite-crud', 'node-sqlite'], ['bun-sqlite-crud', 'bun-sqlite'],
+  ['locked-database', 'node-sqlite'], ['permission-denied', 'node-sqlite'],
+];
+const pb05ExpectedManifest = fixtureManifestAnchors;
+const pb05Invalid = () => { throw new pb05Snapshot.error('invalid PB-05 fixture'); };
+const pb05Ordered = (value, names) => {
+  const keys = pb05SnapshotCall(pb05Snapshot.keys, pb05Snapshot.reflectOwner, [value]);
+  if (keys.length !== names.length) return false;
+  for (let index = 0; index < keys.length; index += 1) if (typeof keys[index] !== 'string' || keys[index] !== names[index]) return false;
+  return true;
+};
+function pb05Copy(value, seen = new pb05Snapshot.set(), profile) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') {
+    if (!pb05SnapshotCall(pb05Snapshot.number, pb05Snapshot.numberOwner, [value]) || pb05SnapshotCall(pb05Snapshot.objectIs, pb05Snapshot.objectOwner, [value, -0])) pb05Invalid();
+    return value;
+  }
+  if (typeof value !== 'object' || pb05SnapshotCall(pb05Snapshot.setHas, seen, [value])) pb05Invalid();
+  const array = pb05SnapshotCall(pb05Snapshot.array, pb05Snapshot.arrayOwner, [value]);
+  if (pb05SnapshotCall(pb05Snapshot.prototype, pb05Snapshot.objectOwner, [value]) !== (array ? pb05Snapshot.arrayPrototype : pb05Snapshot.objectPrototype)) pb05Invalid();
+  pb05SnapshotCall(pb05Snapshot.setAdd, seen, [value]);
+  const extensible = pb05SnapshotCall(pb05Snapshot.extensible, pb05Snapshot.objectOwner, [value]);
+  if (profile !== undefined && profile !== extensible) pb05Invalid();
+  const keys = pb05SnapshotCall(pb05Snapshot.keys, pb05Snapshot.reflectOwner, [value]);
+  if (pb05SnapshotCall(pb05Snapshot.some, keys, [(key) => typeof key !== 'string'])) pb05Invalid();
+  const names = array ? pb05SnapshotCall(pb05Snapshot.slice, keys, [0, -1]) : keys;
+  if (array && (keys[keys.length - 1] !== 'length' || pb05SnapshotCall(pb05Snapshot.some, names,
+    [(key, index) => key !== pb05SnapshotCall(pb05Snapshot.string, pb05Snapshot.stringOwner, [index])]))) pb05Invalid();
+  const output = array ? [] : {};
+  for (let index = 0; index < keys.length; index += 1) {
+    const key = keys[index], descriptor = pb05SnapshotCall(pb05Snapshot.descriptor, pb05Snapshot.objectOwner, [value, key]);
+    if (!descriptor || !('value' in descriptor) || descriptor.get !== undefined || descriptor.set !== undefined) pb05Invalid();
+    const length = array && key === 'length';
+    if (descriptor.enumerable !== !length || descriptor.configurable !== (length ? false : extensible) || descriptor.writable !== extensible) pb05Invalid();
+    if (length) {
+      if (!pb05SnapshotCall(pb05Snapshot.integer, pb05Snapshot.numberOwner, [descriptor.value]) || descriptor.value !== names.length) pb05Invalid();
+    } else pb05SnapshotCall(pb05Snapshot.define, pb05Snapshot.objectOwner, [output, key, { ...pb05Snapshot.data, value: pb05Copy(descriptor.value, seen, extensible) }]);
+  }
+  return output;
+}
+const pb05SameSnapshot = (left, right) => {
+  if (left === null || right === null || typeof left !== 'object' || typeof right !== 'object') return left === right;
+  const leftArray = pb05SnapshotCall(pb05Snapshot.array, pb05Snapshot.arrayOwner, [left]);
+  if (leftArray !== pb05SnapshotCall(pb05Snapshot.array, pb05Snapshot.arrayOwner, [right])) return false;
+  const keys = pb05SnapshotCall(pb05Snapshot.keys, pb05Snapshot.reflectOwner, [left]);
+  if (!pb05Ordered(right, keys)) return false;
+  return pb05SnapshotCall(pb05Snapshot.every, keys, [(key) => pb05SameSnapshot(
+    pb05SnapshotCall(pb05Snapshot.descriptor, pb05Snapshot.objectOwner, [left, key]).value,
+    pb05SnapshotCall(pb05Snapshot.descriptor, pb05Snapshot.objectOwner, [right, key]).value,
+  )]);
+};
+const pb05Has = (value, names) => pb05Ordered(value, names);
+function pb05FixtureSchema(fixture) {
+  if (!pb05Has(fixture, pb05FixtureKeys) || fixture.schemaVersion !== 1 || fixture.identity !== 'PB-05'
+    || fixture.fixtureId !== 'pb-05-history-fixture-v1' || fixture.procedureId !== 'pb-05-history-observation-v1'
+    || fixture.normalizationId !== 'pb-05-history-observation-v1' || !pb05SnapshotCall(pb05Snapshot.array, pb05Snapshot.arrayOwner, [fixture.cases])
+    || fixture.cases.length !== pb05ExpectedCases.length) pb05Invalid();
+  pb05SnapshotCall(pb05Snapshot.forEach, fixture.cases, [(item, index) => {
+    const expectedCase = pb05ExpectedCases[index], id = expectedCase[0], runtime = expectedCase[1];
+    if (!pb05Has(item, pb05CaseKeys) || item.id !== id || item.runtime !== runtime || item.seedPath !== pb05SeedAnchor[0]
+      || item.seedId !== pb05SeedAnchor[1] || item.seedDigest !== pb05SeedAnchor[2]) pb05Invalid();
+  }]);
+}
+function pb05SeedSchema(seed) {
+  if (!pb05Has(seed, pb05SeedKeys) || seed.schemaVersion !== 1 || seed.seedId !== pb05SeedAnchor[1]) pb05Invalid();
+  const task = seed.task, attempt = seed.attempt, event = seed.event, snapshot = seed.snapshot;
+  if (!pb05Has(task, pb05TaskKeys) || !pb05Has(attempt, pb05AttemptKeys) || !pb05Has(event, pb05EventKeys)
+    || !pb05Has(snapshot, pb05ThreadKeys) || !pb05Has(task.thread_snapshot, pb05ThreadKeys)
+    || !pb05SnapshotCall(pb05Snapshot.array, pb05Snapshot.arrayOwner, [snapshot.items]) || snapshot.items.length !== 0
+    || !pb05SameSnapshot(snapshot, task.thread_snapshot)) pb05Invalid();
+  if (task.id !== 'pb05-task-1' || task.agent !== 'pb05-agent' || task.mode !== 'task' || task.status !== 'completed'
+    || task.task !== 'PB-05 deterministic task' || task.created_at !== '2024-01-02T03:04:05.000Z' || task.attempt !== 1
+    || task.last_activity_at !== '2024-01-02T03:04:06.000Z' || snapshot.version !== 1 || snapshot.source !== 'events') pb05Invalid();
+  if (attempt.task_id !== task.id || attempt.attempt !== task.attempt || attempt.status !== task.status || attempt.task !== task.task
+    || attempt.created_at !== task.created_at || attempt.last_activity_at !== task.last_activity_at || event.task_id !== task.id
+    || event.attempt !== task.attempt || event.status !== task.status || event.activity !== 'pb05-complete' || event.created_at !== task.last_activity_at) pb05Invalid();
+}
+function pb05ManifestSchema(manifest) {
+  if (!pb05Has(manifest, ['schemaVersion', 'fixtures', 'eventSeeds']) || manifest.schemaVersion !== 1
+    || !pb05SnapshotCall(pb05Snapshot.array, pb05Snapshot.arrayOwner, [manifest.fixtures]) || manifest.fixtures.length !== pb05ExpectedManifest.length
+    || !pb05SnapshotCall(pb05Snapshot.array, pb05Snapshot.arrayOwner, [manifest.eventSeeds]) || manifest.eventSeeds.length !== eventSeedManifestAnchors.length) pb05Invalid();
+  pb05SnapshotCall(pb05Snapshot.forEach, manifest.fixtures, [(item, index) => {
+    const expectedFixture = pb05ExpectedManifest[index], identity = expectedFixture[0], itemPath = expectedFixture[1], sha256 = expectedFixture[2];
+    if (!pb05Has(item, ['identity', 'path', 'sha256']) || item.identity !== identity || item.path !== itemPath || item.sha256 !== sha256) pb05Invalid();
+  }]);
+  pb05SnapshotCall(pb05Snapshot.forEach, manifest.eventSeeds, [(item, index) => {
+    const expectedSeed = eventSeedManifestAnchors[index], owner = expectedSeed[0], caseId = expectedSeed[1], seedId = expectedSeed[2];
+    const itemPath = expectedSeed[3], sha256 = expectedSeed[4];
+    if (!pb05Has(item, ['owner', 'caseId', 'eventSeedId', 'path', 'sha256']) || item.owner !== owner || item.caseId !== caseId
+      || item.eventSeedId !== seedId || item.path !== itemPath || item.sha256 !== sha256) pb05Invalid();
+  }]);
+}
+export function validatePB05Fixture(root, input) {
+  try {
+    const authority = loadPB05Authority(root);
+    const fixture = pb05Copy(input), manifest = pb05Copy(authority.manifest), expected = pb05Copy(authority.fixture), seed = pb05Copy(authority.seed);
+    pb05FixtureSchema(fixture); pb05FixtureSchema(expected); pb05SeedSchema(seed); pb05ManifestSchema(manifest);
+    if (!pb05SameSnapshot(fixture, expected) || authority.fixtureDigest !== fixtureManifestAnchors[4][2] || authority.seedDigest !== pb05SeedAnchor[2]) pb05Invalid();
+    const result = { fixture, seed, fixtureDigest: authority.fixtureDigest, seedDigest: authority.seedDigest };
+    return pb05Frozen(result);
+  } catch { return pb05Invalid(); }
+}
+pb05SnapshotCall(pb05Snapshot.freeze, pb05Snapshot.objectOwner, [validatePB05Fixture]);
