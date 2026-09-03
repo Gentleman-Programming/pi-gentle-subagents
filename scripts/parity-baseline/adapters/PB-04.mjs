@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { validatePB04Fixture } from '../lib/fixture-definition.mjs';
-import { copy, freeze, own, text } from '../lib/observation-adapter.mjs';
+import { freeze, text } from '../lib/observation-adapter.mjs';
 
 const FAMILIES = [
   'queued', 'running', 'terminal', 'ownership', 'dispatchOrder',
@@ -25,6 +25,52 @@ const FIELDS = [
   ['eventId', 'tick', 'taskId', 'attemptId', 'owner', 'handoff'],
 ];
 const fail = () => { throw new TypeError('invalid PB-04'); };
+const frozen = (value) => { if (value && typeof value === 'object') Object.values(value).forEach(frozen); return freeze(value); };
+const data = (value) => value && Object.hasOwn(value, 'value');
+const profile = (value) => data(value) && value.enumerable && value.writable === value.configurable
+  ? value.writable : undefined;
+const coherent = (properties, mutable) => properties.every((property) => profile(property) === mutable);
+const mutable = (output, key, value) => Object.defineProperty(output, key, {
+  value, enumerable: true, writable: true, configurable: true,
+});
+function own(value, keys) {
+  if (!value || typeof value !== 'object' || Object.getPrototypeOf(value) !== Object.prototype) fail();
+  const extensible = Reflect.isExtensible(value), manifest = Reflect.ownKeys(value);
+  if (manifest.length !== keys.length || manifest.some((key, index) => key !== keys[index])) fail();
+  const properties = manifest.map((key) => Object.getOwnPropertyDescriptor(value, key));
+  if (!coherent(properties, extensible)) fail();
+  const output = {};
+  for (const [index, key] of manifest.entries()) mutable(output, key, properties[index].value);
+  return output;
+}
+function copy(value, seen = new WeakSet()) {
+  if (value === null || typeof value === 'boolean' || typeof value === 'string' && text(value)
+    || typeof value === 'number' && Number.isFinite(value) && !Object.is(value, -0)) return value;
+  if (!value || typeof value !== 'object' || seen.has(value)) fail();
+  seen.add(value);
+  const prototype = Object.getPrototypeOf(value), extensible = Reflect.isExtensible(value);
+  const manifest = Reflect.ownKeys(value);
+  if (manifest.some((key) => typeof key === 'symbol')) fail();
+  const properties = manifest.map((key) => {
+    const property = Object.getOwnPropertyDescriptor(value, key);
+    if (profile(property) !== extensible && (!Array.isArray(value) || key !== 'length')) fail();
+    return [key, property, copy(property.value, seen)];
+  });
+  if (Array.isArray(value)) {
+    const length = properties.find(([key]) => key === 'length')?.[1];
+    const indices = properties.slice(0, -1).map(([, property]) => property);
+    if (prototype !== Array.prototype || !length || !data(length) || length.enumerable
+      || length.configurable || length.writable !== extensible || !coherent(indices, extensible)
+      || !Number.isSafeInteger(length.value) || length.value < 0
+      || manifest.length !== length.value + 1
+      || manifest.some((key, index) => key !== (index === length.value ? 'length' : String(index)))) fail();
+    return properties.slice(0, -1).map(([, , copied]) => copied);
+  }
+  if (![Object.prototype, null].includes(prototype) || !coherent(properties.map(([, property]) => property), extensible)) fail();
+  const output = Object.create(prototype);
+  for (const [key, property, copied] of properties) mutable(output, key, copied);
+  return output;
+}
 const ordered = (value, fields) => value && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).length === fields.length
   && fields.every((key, index) => Object.keys(value)[index] === key);
@@ -167,19 +213,18 @@ function observation(value, descriptorValue, item, seed) {
     if (!equal(families[index].map((recordValue) => recordValue.eventId), expected)) fail();
   }
   relations(families, item, events);
-  return freeze(output);
+  return frozen(output);
 }
 export function adaptPB04(input, readFile = fs.readFileSync) {
   try {
     const request = own(input, ['fixtureRoot', 'fixture', 'caseId', 'targetId', 'target']);
-    if (!text(request.fixtureRoot) || !id(request.caseId) || !['fork', 'upstream'].includes(request.targetId)) fail();
+    const target = own(request.target, ['observe']), observe = target.observe;
+    if (!text(request.fixtureRoot) || !id(request.caseId) || !['fork', 'upstream'].includes(request.targetId) || typeof observe !== 'function') fail();
     const capture = captureAuthority(request.fixtureRoot, request.caseId, readFile);
-    const fixture = validatePB04Fixture(request.fixtureRoot, request.fixture);
-    const target = own(request.target, ['observe']);
-    if (typeof target.observe !== 'function') fail();
+    const fixture = validatePB04Fixture(request.fixtureRoot, copy(request.fixture));
     const authority = fixtureAuthority(fixture, capture);
     const value = descriptor(fixture, authority.item, authority.fixtureDigest, request.targetId);
-    return observation(target.observe(value), value, authority.item, authority.seed);
+    return observation(observe.call(target, value), value, authority.item, authority.seed);
   } catch {
     return fail();
   }
