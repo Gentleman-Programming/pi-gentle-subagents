@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "identity": "PB-05",
+  "fixtureId": "pb-05-history-fixture-v1",
+  "procedureId": "pb-05-history-observation-v1",
+  "normalizationId": "pb-05-history-observation-v1",
+  "cases": [
+    {
+      "id": "node-sqlite-crud",
+      "runtime": "node-sqlite",
+      "seedPath": "fs/pb-05/history-seed.json",
+      "seedId": "pb-05-history-seed-v1",
+      "seedDigest": "9e79da443d71b4080fac4e47a3b9bcfd79534bb48e1caa8eaf83782c96ae9e29"
+    },
+    {
+      "id": "bun-sqlite-crud",
+      "runtime": "bun-sqlite",
+      "seedPath": "fs/pb-05/history-seed.json",
+      "seedId": "pb-05-history-seed-v1",
+      "seedDigest": "9e79da443d71b4080fac4e47a3b9bcfd79534bb48e1caa8eaf83782c96ae9e29"
+    },
+    {
+      "id": "locked-database",
+      "runtime": "node-sqlite",
+      "seedPath": "fs/pb-05/history-seed.json",
+      "seedId": "pb-05-history-seed-v1",
+      "seedDigest": "9e79da443d71b4080fac4e47a3b9bcfd79534bb48e1caa8eaf83782c96ae9e29"
+    },
+    {
+      "id": "permission-denied",
+      "runtime": "node-sqlite",
+      "seedPath": "fs/pb-05/history-seed.json",
+      "seedId": "pb-05-history-seed-v1",
+      "seedDigest": "9e79da443d71b4080fac4e47a3b9bcfd79534bb48e1caa8eaf83782c96ae9e29"
+    }
+  ]
+}

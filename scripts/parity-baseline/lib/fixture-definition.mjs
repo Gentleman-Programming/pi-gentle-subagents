@@ -24,7 +24,10 @@ const fixtureManifestAnchors = Object.freeze([
   ['PB-02', 'PB-02.json', 'c7312d5567953b6357221b216aeaec1635d634a3a19e16ae89f0b61bbad15cc8'],
   ['PB-03', 'PB-03.json', 'f877f8167aab9c0512c441c3e1c68045393b74945ee1e7805997806659ae6dda'],
   ['PB-04', 'PB-04.json', '9cc8bbc646ad530051b0e919c9c62617397b0012a678f8e89b8c91e5d401b972'],
+  ['PB-05', 'PB-05.json', '355e3775f64c6543fb6bce418ec0bac834a271087dcc82898eccf2ad11b5e02e'],
 ].map(Object.freeze));
+const pb05SeedAnchor = Object.freeze(['fs/pb-05/history-seed.json', 'pb-05-history-seed-v1', '9e79da443d71b4080fac4e47a3b9bcfd79534bb48e1caa8eaf83782c96ae9e29']);
+const pb04FullManifestDigest = 'b07223fa7763b471049f557a11221cdadb24e508f45bebf5ebba165a4e1c26f9';
 
 const eventSeedManifestAnchors = Object.freeze([
   [
@@ -52,6 +55,7 @@ const eventSeedManifestAnchors = Object.freeze([
 const authorityPaths = Object.freeze([
   'manifest.json',
   ...fixtureManifestAnchors.map(([, file]) => file),
+  pb05SeedAnchor[0],
   ...eventSeedManifestAnchors.map(([, , , file]) => file),
 ]);
 
@@ -86,6 +90,8 @@ export function validateFixtureManifest(root, input) {
   try {
     const bytes = readAuthorityBytes(root);
     const value = copy(input);
+    if (digest(bytes.get(pb05SeedAnchor[0])) !== pb05SeedAnchor[2]) fail();
+    if (JSON.parse(bytes.get(pb05SeedAnchor[0])).seedId !== pb05SeedAnchor[1]) fail();
     if (!exactOrdered(value, ['schemaVersion', 'fixtures', 'eventSeeds'])) fail();
     if (value.schemaVersion !== 1 || !Array.isArray(value.fixtures)) fail();
     if (!Array.isArray(value.eventSeeds)) fail();
@@ -238,7 +244,7 @@ function pb04Manifest(manifest, fixture) {
     && manifest.schemaVersion === 1
     && Array.isArray(manifest.fixtures)
     && Array.isArray(manifest.eventSeeds)
-    && manifest.fixtures.length === 4
+    && manifest.fixtures.length === 5
     && manifest.eventSeeds.length === 4;
   if (!hasManifestSchema) pb04Fail('schema');
 
@@ -339,6 +345,7 @@ export function validatePB04Fixture(root, input) {
         sha256: eventSeedManifestAnchors[index][4],
       }], ['owner', 'caseId', 'eventSeedId', 'path', 'sha256']))
       && digest(bytes.get('PB-04.json')) === fixtureManifestAnchors[3][2]
+      && digest(bytes.get('manifest.json')) === pb04FullManifestDigest
       && eventSeedManifestAnchors.every(([, , , file, sha]) => digest(bytes.get(file)) === sha);
     if (!hasAuthority) pb04Fail('authority');
     return frozen(value);

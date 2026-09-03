@@ -12,6 +12,7 @@ const manifest = () => ({
     { identity: 'PB-02', path: 'PB-02.json', sha256: 'c7312d5567953b6357221b216aeaec1635d634a3a19e16ae89f0b61bbad15cc8' },
     { identity: 'PB-03', path: 'PB-03.json', sha256: 'f877f8167aab9c0512c441c3e1c68045393b74945ee1e7805997806659ae6dda' },
     { identity: 'PB-04', path: 'PB-04.json', sha256: '9cc8bbc646ad530051b0e919c9c62617397b0012a678f8e89b8c91e5d401b972' },
+    { identity: 'PB-05', path: 'PB-05.json', sha256: '355e3775f64c6543fb6bce418ec0bac834a271087dcc82898eccf2ad11b5e02e' },
   ],
   eventSeeds: [
     { owner: 'PB-04', caseId: 'single-foreground',
@@ -50,7 +51,7 @@ const rejects = (label: string, mutate: (value: any) => void, id = ids[0]) => { 
 describe('PB-02 adapter', () => {
   it('uses the exact hyphenated PB-02 identity in fixture metadata', () => {
     expect(fixture().identity).toBe('PB-02');
-    expect(JSON.parse(read('manifest.json')).fixtures.map(({ identity }: { identity: string }) => identity)).toEqual(['PB-01', 'PB-02', 'PB-03', 'PB-04']);
+    expect(JSON.parse(read('manifest.json')).fixtures.map(({ identity }: { identity: string }) => identity)).toEqual(['PB-01', 'PB-02', 'PB-03', 'PB-04', 'PB-05']);
   });
 
   it('owns six exact fixture vectors and the PB-01 coexistence manifest', () => {

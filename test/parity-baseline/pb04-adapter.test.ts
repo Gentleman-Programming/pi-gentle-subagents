@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -94,6 +95,12 @@ function invoke(output: any, caseId = 'bounded-concurrency') {
 const reversePositions = (items: any[]) => items.reverse().forEach((item, index) => { item.position = index + 1; });
 
 describe('PB-04 injected semantic adapter core', () => {
+  it('uses the rebased PB-04 full-manifest anchor', () => {
+    expect(createHash('sha256').update(fs.readFileSync(path.join(root, 'manifest.json'))).digest('hex'))
+      .toBe('b07223fa7763b471049f557a11221cdadb24e508f45bebf5ebba165a4e1c26f9');
+    expect(observe('single-foreground').calls).toBe(1);
+  });
+
   it.each(['single-foreground', 'serial-foreground', 'bounded-concurrency', 'mixed-background'])(
     'observes one frozen descriptor and direct envelope for %s',
     (caseId) => {

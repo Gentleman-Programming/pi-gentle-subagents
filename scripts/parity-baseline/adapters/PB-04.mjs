@@ -81,7 +81,7 @@ const digest = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(va
 const equal = (left, right) => left.length === right.length
   && left.every((value, index) => value === right[index]);
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
-const MANIFEST_DIGEST = 'ab4e328824dec3dc4381dc50c3d0d7bb0292663741edf5fb5ea2ada9f9d07db0';
+const MANIFEST_DIGEST = 'b07223fa7763b471049f557a11221cdadb24e508f45bebf5ebba165a4e1c26f9';
 const PB04_DIGEST = '9cc8bbc646ad530051b0e919c9c62617397b0012a678f8e89b8c91e5d401b972';
 const SEEDS = [
   ['single-foreground', 'pb-04-single-foreground-events-v1', 'events/pb-04/single-foreground.json', 'bbad31dcfcaa968a7bdd830bae26cb00faa9df323c9d6e998ae02b000af82999'],
