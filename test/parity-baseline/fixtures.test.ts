@@ -8,6 +8,7 @@ import { createEvidenceRef, readEvidence } from '../../scripts/parity-baseline/l
 // @ts-expect-error PB-03 fixture authority is introduced by this work unit.
 import * as fixtureDefinition from '../../scripts/parity-baseline/lib/fixture-definition.mjs';
 const { validateFixtureManifest, validatePB03Fixture, validatePB04Fixture } = fixtureDefinition;
+const setPrototypeOf = Object.setPrototypeOf;
 
 const roots: string[] = [];
 function root() { const value = fs.mkdtempSync(path.join(os.tmpdir(), 'evidence-')); roots.push(value); return value; }
@@ -116,7 +117,7 @@ describe('PB-04 immutable asset anchors', () => {
   });
 
   it('keeps external anchors closure-private', () => {
-    expect(Object.keys(fixtureDefinition).sort()).toEqual(['loadPB05Authority', 'validateFixtureManifest', 'validatePB03Fixture', 'validatePB04Fixture']);
+    expect(Object.keys(fixtureDefinition).sort()).toEqual(['loadPB05Authority', 'validateFixtureManifest', 'validatePB03Fixture', 'validatePB04Fixture', 'validatePB05Fixture']);
   });
 
   it('freezes the exported PB-05 authority loader without changing its result', () => {
@@ -770,6 +771,138 @@ describe('PB-03 fixture authority', () => {
     const value = fixture();
     Object.defineProperty(value.cases, 'length', { writable: false });
     expect(() => validatePB03Fixture(fixtureRoot, value)).toThrow();
+  });
+
+  it('validates exact PB-05 data despite a post-import hostile Array iterator', () => {
+    const pb05Root = path.resolve(import.meta.dirname, '../../evidence/parity-baseline/fixtures');
+    const input = JSON.parse(fs.readFileSync(path.join(pb05Root, 'PB-05.json'), 'utf8'));
+    const iterator = Object.getOwnPropertyDescriptor(Array.prototype, Symbol.iterator)!;
+    const validate = (fixtureDefinition as any).validatePB05Fixture; let result;
+    try {
+      Object.defineProperty(Array.prototype, Symbol.iterator, { ...iterator, value() { throw new Error('live iterator'); } });
+      result = validate(pb05Root, input);
+    } finally { Object.defineProperty(Array.prototype, Symbol.iterator, iterator); }
+    expect(result.fixture).toEqual(input);
+    expect(result).toMatchObject({
+      fixtureDigest: '355e3775f64c6543fb6bce418ec0bac834a271087dcc82898eccf2ad11b5e02e',
+      seedDigest: '9e79da443d71b4080fac4e47a3b9bcfd79534bb48e1caa8eaf83782c96ae9e29',
+    });
+  });
+
+  it('throws the captured TypeError despite a post-import hostile global constructor', () => {
+    const pb05Root = path.resolve(import.meta.dirname, '../../evidence/parity-baseline/fixtures');
+    const input = JSON.parse(fs.readFileSync(path.join(pb05Root, 'PB-05.json'), 'utf8')); input.identity = 'invalid';
+    const error = globalThis.TypeError, descriptor = Object.getOwnPropertyDescriptor(globalThis, 'TypeError')!;
+    const validate = (fixtureDefinition as any).validatePB05Fixture; let result;
+    try {
+      Object.defineProperty(globalThis, 'TypeError', { ...descriptor, value: class HostileTypeError extends Error {} });
+      try { validate(pb05Root, input); } catch (caught) { result = caught; }
+    } finally { Object.defineProperty(globalThis, 'TypeError', descriptor); }
+    expect(result).toBeInstanceOf(error); expect(Object.getPrototypeOf(result)).toBe(error.prototype);
+    expect((result as Error).message).toBe('invalid PB-05 fixture');
+  });
+
+  it('GREEN: returns fresh deeply frozen PB-05 fixture and seed snapshots', () => {
+    const pb05Root = path.resolve(import.meta.dirname, '../../evidence/parity-baseline/fixtures');
+    const input = JSON.parse(fs.readFileSync(path.join(pb05Root, 'PB-05.json'), 'utf8'));
+    const validate = (fixtureDefinition as any).validatePB05Fixture;
+    const mutable = Object.getOwnPropertyDescriptor(input, 'identity')!;
+    expect([mutable.enumerable, mutable.writable, mutable.configurable]).toEqual([true, true, true]);
+    expect(Object.isFrozen(validate)).toBe(true);
+    const first = validate(pb05Root, input), second = validate(pb05Root, JSON.parse(JSON.stringify(input)));
+    expect(first).toMatchObject({ fixture: input, fixtureDigest: '355e3775f64c6543fb6bce418ec0bac834a271087dcc82898eccf2ad11b5e02e' });
+    expect(Object.isFrozen(first) && Object.isFrozen(first.fixture) && Object.isFrozen(first.seed)).toBe(true);
+    expect(second).not.toBe(first); expect(second.seed).not.toBe(first.seed);
+    input.cases[0].runtime = 'wrong'; expect(first.fixture.cases[0].runtime).toBe('node-sqlite');
+  });
+
+  it('RED: rejects reversed PB-05 ownKeys after reaching ordering without live gets', () => {
+    const pb05Root = path.resolve(import.meta.dirname, '../../evidence/parity-baseline/fixtures');
+    const value = JSON.parse(fs.readFileSync(path.join(pb05Root, 'PB-05.json'), 'utf8'));
+    let ownKeys = 0, descriptors = 0, extensible = 0, prototypes = 0, gets = 0;
+    const input = new Proxy(value, {
+      ownKeys(target) { ownKeys += 1; return Reflect.ownKeys(target).reverse(); },
+      getOwnPropertyDescriptor(target, key) { descriptors += 1; return Reflect.getOwnPropertyDescriptor(target, key); },
+      isExtensible(target) { extensible += 1; return Reflect.isExtensible(target); },
+      getPrototypeOf(target) { prototypes += 1; return Reflect.getPrototypeOf(target); },
+      get() { gets += 1; throw new Error('ordinary get'); },
+    });
+    expect(() => (fixtureDefinition as any).validatePB05Fixture(pb05Root, input)).toThrow('invalid PB-05 fixture');
+    expect([ownKeys, descriptors, extensible, prototypes, gets]).toEqual([1, 6, 1, 1, 0]);
+  });
+
+  it.each([
+    ['cycle', (value: any) => value.cases[0].self = value], ['shared', (value: any) => value.cases[1] = value.cases[0]],
+    ['sparse', (value: any) => value.cases = [, ...value.cases]],
+    ['own __proto__', (value: any) => Object.defineProperty(value, '__proto__', { value: {}, enumerable: true, writable: true, configurable: true })],
+    ['symbol', (value: any) => value[Symbol('PB-05')] = true], ['function', (value: any) => value.identity = () => 'PB-05'],
+    ['undefined', (value: any) => value.identity = undefined], ['bigint', (value: any) => value.schemaVersion = 1n],
+    ['nonfinite', (value: any) => value.schemaVersion = Infinity], ['negative zero', (value: any) => value.schemaVersion = -0],
+    ['custom prototype', (value: any) => setPrototypeOf(value, { custom: true })],
+    ['root schema drift', (value: any) => value.procedureId = 'wrong'], ['case order drift', (value: any) => value.cases.reverse()],
+    ['runtime drift', (value: any) => value.cases[0].runtime = 'bun-sqlite'], ['seed tuple drift', (value: any) => value.cases[0].seedId = 'wrong'],
+  ])('rejects PB-05 %s from a fresh valid precursor', (_label, mutate) => {
+    const pb05Root = path.resolve(import.meta.dirname, '../../evidence/parity-baseline/fixtures');
+    const value = JSON.parse(fs.readFileSync(path.join(pb05Root, 'PB-05.json'), 'utf8'));
+    expect((fixtureDefinition as any).validatePB05Fixture(pb05Root, value)).toMatchObject({ fixture: value });
+    mutate(value); expect(() => (fixtureDefinition as any).validatePB05Fixture(pb05Root, value)).toThrow('invalid PB-05 fixture');
+  });
+
+  it('rejects accessors without calling the getter and mixed profiles while accepting deep freeze', () => {
+    const pb05Root = path.resolve(import.meta.dirname, '../../evidence/parity-baseline/fixtures');
+    const value = JSON.parse(fs.readFileSync(path.join(pb05Root, 'PB-05.json'), 'utf8')); let calls = 0;
+    Object.defineProperty(value, 'identity', { enumerable: true, get() { calls += 1; return 'PB-05'; } });
+    expect(() => (fixtureDefinition as any).validatePB05Fixture(pb05Root, value)).toThrow('invalid PB-05 fixture'); expect(calls).toBe(0);
+    const freeze = (item: any): any => item && typeof item === 'object'
+      ? Object.freeze(Reflect.ownKeys(item).reduce((entry: any, key) => (freeze(entry[key]), entry), item)) : item;
+    const frozen = freeze(JSON.parse(fs.readFileSync(path.join(pb05Root, 'PB-05.json'), 'utf8'))), mixed = JSON.parse(JSON.stringify(frozen));
+    expect((fixtureDefinition as any).validatePB05Fixture(pb05Root, frozen)).toMatchObject({ fixture: frozen });
+    expect((fixtureDefinition as any).validatePB05Fixture(pb05Root, mixed)).toMatchObject({ fixture: mixed }); Object.freeze(mixed.cases[0]);
+    expect(() => (fixtureDefinition as any).validatePB05Fixture(pb05Root, mixed)).toThrow('invalid PB-05 fixture');
+  });
+
+  it('rejects an invalid earlier descriptor despite a later trap restoring it', () => {
+    const pb05Root = path.resolve(import.meta.dirname, '../../evidence/parity-baseline/fixtures');
+    const value = JSON.parse(fs.readFileSync(path.join(pb05Root, 'PB-05.json'), 'utf8')); value.identity = 'invalid-before-capture';
+    const input = new Proxy(value, { getOwnPropertyDescriptor(target, key) {
+      const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
+      if (key === 'normalizationId') (target as any).identity = 'PB-05';
+      return descriptor;
+    } });
+    expect(() => (fixtureDefinition as any).validatePB05Fixture(pb05Root, input)).toThrow('invalid PB-05 fixture');
+    expect(value.identity).toBe('PB-05');
+  });
+
+  const forgedPB05 = async (directory: string, tag: string) => {
+    const prototype = Object.getPrototypeOf(createHash('sha256')), digest = prototype.digest; let call = 0;
+    try {
+      prototype.digest = () => [
+        'b07223fa7763b471049f557a11221cdadb24e508f45bebf5ebba165a4e1c26f9',
+        'b07223fa7763b471049f557a11221cdadb24e508f45bebf5ebba165a4e1c26f9',
+        '355e3775f64c6543fb6bce418ec0bac834a271087dcc82898eccf2ad11b5e02e',
+        '9e79da443d71b4080fac4e47a3b9bcfd79534bb48e1caa8eaf83782c96ae9e29',
+      ][call++];
+      return await import(new URL(`../../scripts/parity-baseline/lib/fixture-definition.mjs?pb05-semantic-${tag}`, import.meta.url).href);
+    } finally { prototype.digest = digest; vi.resetModules(); }
+  };
+
+  it.each([
+    ['manifest PB-05 tuple', (manifest: any, _seed: any) => manifest.fixtures[4].path = 'forged.json'],
+    ['seed root schema', (_manifest: any, seed: any) => seed.schemaVersion = 2],
+    ['seed task relation', (_manifest: any, seed: any) => seed.task.agent = 'forged-agent'],
+    ['seed attempt relation', (_manifest: any, seed: any) => seed.attempt.task_id = 'forged-task'],
+    ['seed event relation', (_manifest: any, seed: any) => seed.event.created_at = 'wrong-time'],
+    ['seed field omission', (_manifest: any, seed: any) => delete seed.task.mode],
+  ])('rejects forged digest-authenticated %s through PB-05 semantics', async (tag, mutate) => {
+    const pb05Root = path.resolve(import.meta.dirname, '../../evidence/parity-baseline/fixtures'), directory = root();
+    const input = JSON.parse(fs.readFileSync(path.join(pb05Root, 'PB-05.json'), 'utf8'));
+    expect((fixtureDefinition as any).validatePB05Fixture(pb05Root, input)).toMatchObject({ fixture: input }); fs.cpSync(pb05Root, directory, { recursive: true });
+    const manifestPath = path.join(directory, 'manifest.json'), seedPath = path.join(directory, 'fs/pb-05/history-seed.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')), seed = JSON.parse(fs.readFileSync(seedPath, 'utf8'));
+    mutate(manifest, seed); fs.writeFileSync(manifestPath, JSON.stringify(manifest)); fs.writeFileSync(seedPath, JSON.stringify(seed));
+    const module = await forgedPB05(directory, tag.replaceAll(' ', '-'));
+    const forged = JSON.parse(fs.readFileSync(path.join(directory, 'PB-05.json'), 'utf8'));
+    expect(() => (module as any).validatePB05Fixture(directory, forged)).toThrow('invalid PB-05 fixture');
   });
 
   it('uses standard descriptors exactly once and never live gets', () => {
